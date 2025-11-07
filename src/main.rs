@@ -2,6 +2,7 @@ use bentoproxy_orchestrator::{
     auth::JwtManager,
     db::Database,
     device_ws::DeviceRegistry,
+    http_proxy,
     mux::StreamMultiplexer,
     socks5,
     web::{create_router, handlers::AppState},
@@ -65,11 +66,27 @@ async fn main() {
     let socks5_registry = registry.clone();
     let socks5_db = db.clone();
     let socks5_mux = mux.clone();
+    let require_socks5_auth = config.require_socks5_auth;
     tokio::spawn(async move {
         info!("SOCKS5 server listening on {}", socks5_addr);
-        if let Err(e) = socks5::run_server(socks5_addr, socks5_registry, socks5_db, socks5_mux, config.require_socks5_auth).await
+        if let Err(e) = socks5::run_server(socks5_addr, socks5_registry, socks5_db, socks5_mux, require_socks5_auth).await
         {
             error!("SOCKS5 server error: {}", e);
+        }
+    });
+
+    // Spawn HTTP CONNECT proxy server
+    let http_proxy_addr: SocketAddr = format!("0.0.0.0:{}", config.http_proxy_port)
+        .parse()
+        .unwrap();
+    let http_proxy_registry = registry.clone();
+    let http_proxy_db = db.clone();
+    let http_proxy_mux = mux.clone();
+    tokio::spawn(async move {
+        info!("HTTP CONNECT proxy listening on {}", http_proxy_addr);
+        if let Err(e) = http_proxy::run_server(http_proxy_addr, http_proxy_registry, http_proxy_db, http_proxy_mux).await
+        {
+            error!("HTTP CONNECT proxy error: {}", e);
         }
     });
 
@@ -86,6 +103,7 @@ async fn main() {
 #[derive(Debug, Clone)]
 struct Config {
     pub http_port: u16,
+    pub http_proxy_port: u16,
     pub socks5_port: u16,
     pub socks5_host: String,
     pub database_path: PathBuf,
@@ -101,6 +119,11 @@ impl Config {
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(8080);
+
+        let http_proxy_port = env::var("HTTP_PROXY_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(8888);
 
         let socks5_port = env::var("SOCKS5_PORT")
             .ok()
@@ -140,6 +163,7 @@ impl Config {
 
         Self {
             http_port,
+            http_proxy_port,
             socks5_port,
             socks5_host,
             database_path,
