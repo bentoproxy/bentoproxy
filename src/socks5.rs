@@ -3,7 +3,7 @@ use crate::{
     device_ws::DeviceRegistry,
 };
 use bytes::{BufMut, BytesMut};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use thiserror::Error;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -90,9 +90,16 @@ async fn handle_client(
         return Err(Socks5Error::PortBlocked(port));
     }
 
-    // Get an available device
+    // Check if host is private/reserved (SSRF protection)
+    if is_host_blocked(&host) {
+        warn!("Blocked connection to private/reserved host: {}", host);
+        send_reply(&mut stream, REP_CONNECTION_NOT_ALLOWED).await?;
+        return Err(Socks5Error::HostBlocked(host));
+    }
+
+    // Get best available device (least-connections with capacity check)
     let device_session = registry
-        .get_any_device()
+        .get_best_device(&mux)
         .ok_or(Socks5Error::NoDevicesAvailable)?;
 
     debug!("Selected device {} for proxy", device_session.device_id);
@@ -429,6 +436,46 @@ fn is_port_blocked(port: u16) -> bool {
     BLOCKED_PORTS.contains(&port)
 }
 
+/// Check if an IP address is private/reserved and should be blocked (SSRF protection)
+fn is_ip_blocked(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ipv4) => {
+            ipv4.is_loopback()             // 127.0.0.0/8
+                || ipv4.is_private()        // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+                || ipv4.is_link_local()     // 169.254.0.0/16
+                || ipv4.is_unspecified()    // 0.0.0.0
+                || ipv4.is_broadcast()      // 255.255.255.255
+                || ipv4.octets()[0] == 100 && (ipv4.octets()[1] & 0xC0) == 64  // 100.64.0.0/10 (CGNAT)
+        }
+        IpAddr::V6(ipv6) => {
+            ipv6.is_loopback()             // ::1
+                || ipv6.is_unspecified()   // ::
+                || (ipv6.segments()[0] & 0xfe00) == 0xfc00  // fc00::/7 (ULA)
+                || (ipv6.segments()[0] & 0xffc0) == 0xfe80  // fe80::/10 (link-local)
+                // IPv4-mapped IPv6 (::ffff:x.x.x.x) — check the embedded IPv4
+                || match ipv6.to_ipv4_mapped() {
+                    Some(ipv4) => is_ip_blocked(&IpAddr::V4(ipv4)),
+                    None => false,
+                }
+        }
+    }
+}
+
+/// Check if a host is blocked (SSRF protection — blocks private IPs and reserved hostnames)
+fn is_host_blocked(host: &str) -> bool {
+    // Check if it's a direct IP address
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return is_ip_blocked(&ip);
+    }
+
+    // Block reserved hostnames
+    let lower = host.to_lowercase();
+    lower == "localhost"
+        || lower.ends_with(".local")
+        || lower.ends_with(".internal")
+        || lower.ends_with(".localhost")
+}
+
 #[derive(Debug, Error)]
 pub enum Socks5Error {
     #[error("I/O error: {0}")]
@@ -458,6 +505,9 @@ pub enum Socks5Error {
     #[error("Port {0} is blocked")]
     PortBlocked(u16),
 
+    #[error("Host blocked: {0}")]
+    HostBlocked(String),
+
     #[error("No devices available")]
     NoDevicesAvailable,
 
@@ -469,4 +519,160 @@ pub enum Socks5Error {
 
     #[error("Bind error: {0}")]
     BindError(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    // --- is_ip_blocked IPv4 ---
+
+    #[test]
+    fn blocks_loopback_v4() {
+        assert!(is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(is_ip_blocked(&"127.0.0.1".parse().unwrap()));
+        assert!(is_ip_blocked(&"127.255.255.255".parse().unwrap()));
+    }
+
+    #[test]
+    fn blocks_rfc1918() {
+        assert!(is_ip_blocked(&"10.0.0.1".parse().unwrap()));
+        assert!(is_ip_blocked(&"10.255.255.255".parse().unwrap()));
+        assert!(is_ip_blocked(&"172.16.0.1".parse().unwrap()));
+        assert!(is_ip_blocked(&"172.31.255.255".parse().unwrap()));
+        assert!(is_ip_blocked(&"192.168.0.1".parse().unwrap()));
+        assert!(is_ip_blocked(&"192.168.255.255".parse().unwrap()));
+    }
+
+    #[test]
+    fn blocks_link_local_v4() {
+        assert!(is_ip_blocked(&"169.254.0.1".parse().unwrap()));
+        assert!(is_ip_blocked(&"169.254.255.255".parse().unwrap()));
+    }
+
+    #[test]
+    fn blocks_unspecified_and_broadcast() {
+        assert!(is_ip_blocked(&IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
+        assert!(is_ip_blocked(&IpAddr::V4(Ipv4Addr::BROADCAST)));
+    }
+
+    #[test]
+    fn blocks_cgnat() {
+        assert!(is_ip_blocked(&"100.64.0.1".parse().unwrap()));
+        assert!(is_ip_blocked(&"100.127.255.255".parse().unwrap()));
+        // Just outside CGNAT range
+        assert!(!is_ip_blocked(&"100.128.0.0".parse().unwrap()));
+        assert!(!is_ip_blocked(&"100.63.255.255".parse().unwrap()));
+    }
+
+    #[test]
+    fn allows_public_v4() {
+        assert!(!is_ip_blocked(&"8.8.8.8".parse().unwrap()));
+        assert!(!is_ip_blocked(&"1.1.1.1".parse().unwrap()));
+        assert!(!is_ip_blocked(&"93.184.216.34".parse().unwrap()));
+    }
+
+    // --- is_ip_blocked IPv6 ---
+
+    #[test]
+    fn blocks_loopback_v6() {
+        assert!(is_ip_blocked(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
+    }
+
+    #[test]
+    fn blocks_unspecified_v6() {
+        assert!(is_ip_blocked(&IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
+    }
+
+    #[test]
+    fn blocks_ula_v6() {
+        assert!(is_ip_blocked(&"fc00::1".parse().unwrap()));
+        assert!(is_ip_blocked(&"fd12:3456::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn blocks_link_local_v6() {
+        assert!(is_ip_blocked(&"fe80::1".parse().unwrap()));
+        assert!(is_ip_blocked(&"fe80::abcd:1234".parse().unwrap()));
+    }
+
+    #[test]
+    fn blocks_ipv4_mapped_v6() {
+        // ::ffff:127.0.0.1
+        assert!(is_ip_blocked(&"::ffff:127.0.0.1".parse().unwrap()));
+        // ::ffff:192.168.1.1
+        assert!(is_ip_blocked(&"::ffff:192.168.1.1".parse().unwrap()));
+        // ::ffff:10.0.0.1
+        assert!(is_ip_blocked(&"::ffff:10.0.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn allows_public_v6() {
+        assert!(!is_ip_blocked(&"2606:4700::1111".parse().unwrap()));
+        assert!(!is_ip_blocked(&"2001:db8::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn allows_public_ipv4_mapped_v6() {
+        // ::ffff:8.8.8.8
+        assert!(!is_ip_blocked(&"::ffff:8.8.8.8".parse().unwrap()));
+    }
+
+    // --- is_host_blocked ---
+
+    #[test]
+    fn blocks_localhost_hostname() {
+        assert!(is_host_blocked("localhost"));
+        assert!(is_host_blocked("LOCALHOST"));
+        assert!(is_host_blocked("Localhost"));
+    }
+
+    #[test]
+    fn blocks_reserved_tlds() {
+        assert!(is_host_blocked("myhost.local"));
+        assert!(is_host_blocked("service.internal"));
+        assert!(is_host_blocked("app.localhost"));
+        assert!(is_host_blocked("MYHOST.LOCAL"));
+    }
+
+    #[test]
+    fn blocks_ip_strings() {
+        assert!(is_host_blocked("127.0.0.1"));
+        assert!(is_host_blocked("10.0.0.1"));
+        assert!(is_host_blocked("192.168.1.1"));
+        assert!(is_host_blocked("::1"));
+    }
+
+    #[test]
+    fn allows_public_hostnames() {
+        assert!(!is_host_blocked("example.com"));
+        assert!(!is_host_blocked("google.com"));
+        assert!(!is_host_blocked("ifconfig.me"));
+    }
+
+    #[test]
+    fn does_not_false_positive_on_partial_matches() {
+        // "local" as a suffix but not ".local"
+        assert!(!is_host_blocked("notlocal"));
+        assert!(!is_host_blocked("mylocal"));
+        // contains "localhost" but isn't the hostname or a subdomain
+        assert!(!is_host_blocked("notlocalhost.com"));
+    }
+
+    // --- is_port_blocked ---
+
+    #[test]
+    fn blocks_dangerous_ports() {
+        assert!(is_port_blocked(25));
+        assert!(is_port_blocked(3306));
+        assert!(is_port_blocked(6379));
+    }
+
+    #[test]
+    fn allows_standard_ports() {
+        assert!(!is_port_blocked(80));
+        assert!(!is_port_blocked(443));
+        assert!(!is_port_blocked(8080));
+    }
 }

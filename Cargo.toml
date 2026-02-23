@@ -51,7 +51,7 @@ clap = { version = "4", features = ["derive"] }
 base64 = "0.21"
 
 # Protocol
-bentoproxy-protocol = { path = "../protocol" }
+bentoproxy-protocol = { path = "../bentoproxy-protocol" }
 
 [dev-dependencies]
 tokio-test = "0.4"

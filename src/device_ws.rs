@@ -34,9 +34,18 @@ impl DeviceRegistry {
         self.devices.get(device_id).map(|entry| entry.value().clone())
     }
 
-    /// Get first available active device (for MVP - simple round-robin later)
-    pub fn get_any_device(&self) -> Option<DeviceSession> {
-        self.devices.iter().next().map(|entry| entry.value().clone())
+    /// Get device with fewest active streams that still has capacity (least-connections routing)
+    pub fn get_best_device(&self, mux: &crate::mux::StreamMultiplexer) -> Option<DeviceSession> {
+        self.devices
+            .iter()
+            .map(|entry| {
+                let device = entry.value().clone();
+                let count = mux.device_stream_count(&device.device_id);
+                (device, count)
+            })
+            .filter(|(device, count)| *count < device.max_conns)
+            .min_by_key(|(_, count)| *count)
+            .map(|(device, _)| device)
     }
 
     /// Register a connected device
@@ -85,11 +94,11 @@ async fn handle_device_connection(socket: WebSocket, registry: DeviceRegistry, m
     // Wait for AUTH frame (with timeout)
     let auth_timeout = tokio::time::timeout(Duration::from_secs(30), ws_receiver.next()).await;
 
-    let (device_id, db_session_id) = match auth_timeout {
+    let (device_id, db_session_id, max_conns) = match auth_timeout {
         Ok(Some(Ok(Message::Binary(data)))) => {
             match authenticate_device(&registry.db, Bytes::from(data)).await {
-                Ok(Some((device_id, session_id))) => {
-                    info!("Device authenticated: {}", device_id);
+                Ok(Some((device_id, session_id, max_conns))) => {
+                    info!("Device authenticated: {} (max_conns={})", device_id, max_conns);
 
                     // Send AUTH acknowledgment (empty DATA frame with ACK flag)
                     let ack_frame = Frame::data_ack(0);
@@ -98,7 +107,7 @@ async fn handle_device_connection(socket: WebSocket, registry: DeviceRegistry, m
                         return;
                     }
 
-                    (device_id, session_id)
+                    (device_id, session_id, max_conns)
                 }
                 Ok(None) => {
                     warn!("Device authentication failed: invalid credentials");
@@ -139,7 +148,7 @@ async fn handle_device_connection(socket: WebSocket, registry: DeviceRegistry, m
     let session = DeviceSession {
         device_id: device_id.clone(),
         sender: tx,
-        max_conns: 8, // From DB, but hardcoded for MVP
+        max_conns,
     };
 
     // Register device in registry
@@ -295,7 +304,7 @@ async fn handle_device_connection(socket: WebSocket, registry: DeviceRegistry, m
 async fn authenticate_device(
     db: &Database,
     data: Bytes,
-) -> Result<Option<(String, i64)>, ProtocolError> {
+) -> Result<Option<(String, i64, usize)>, ProtocolError> {
     let frame = Frame::from_bytes(data)?;
 
     if frame.frame_type != FrameType::Auth {
@@ -312,9 +321,11 @@ async fn authenticate_device(
                 return Ok(None);
             }
 
+            let max_conns = device.max_conns.max(1) as usize;
+
             // Start session in database
             match db.start_device_session(&device_id) {
-                Ok(session_id) => Ok(Some((device_id, session_id))),
+                Ok(session_id) => Ok(Some((device_id, session_id, max_conns))),
                 Err(e) => {
                     error!("Failed to start device session: {}", e);
                     Ok(None)
