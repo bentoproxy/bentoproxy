@@ -10,7 +10,7 @@ use bentoproxy_orchestrator::{
 use std::{env, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::net::TcpListener;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -72,6 +72,21 @@ async fn main() {
         if let Err(e) = socks5::run_server(socks5_addr, socks5_registry, socks5_db, socks5_mux, require_socks5_auth).await
         {
             error!("SOCKS5 server error: {}", e);
+        }
+    });
+
+    // Spawn periodic stream cleanup task (fixes zombie stream accumulation)
+    let cleanup_mux = mux.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let count = cleanup_mux.stream_count();
+            if count > 0 {
+                debug!("Active streams: {}", count);
+            }
+            // Remove streams with dead senders or older than 1 hour
+            cleanup_mux.cleanup_stale_streams(3600);
         }
     });
 

@@ -191,6 +191,9 @@ async fn handle_client(
         } => result,
     };
 
+    // Always clean up stream when relay exits — prevents zombie streams (Bug #1)
+    mux.remove_stream(stream_id);
+
     // End flow with byte counts
     if let Err(e) = db.end_flow(flow_id, Some((bytes_up, bytes_down))) {
         error!("Failed to end flow {}: {}", flow_id, e);
@@ -200,9 +203,6 @@ async fn handle_client(
         "SOCKS5 flow ended: stream_id={}, bytes_up={}, bytes_down={}",
         stream_id, bytes_up, bytes_down
     );
-
-    // Close stream in multiplexer
-    mux.close_stream(stream_id, &device_session.device_id);
 
     relay_result
 }

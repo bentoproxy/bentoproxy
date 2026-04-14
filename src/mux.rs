@@ -7,6 +7,7 @@ use crate::protocol::{Frame, FrameType};
 use bytes::Bytes;
 use dashmap::DashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
@@ -17,10 +18,12 @@ pub type StreamId = u32;
 pub struct Stream {
     pub stream_id: StreamId,
     pub device_id: String,
-    /// Channel to send data back to SOCKS5 client
+    /// Channel to send data back to SOCKS5/HTTP client
     pub socks5_sender: mpsc::UnboundedSender<Bytes>,
-    /// Signal when stream is closed
+    /// Signal when stream is opened (ACK received)
     pub close_notify: Option<oneshot::Sender<()>>,
+    /// When this stream was created
+    pub created_at: Instant,
 }
 
 /// Central stream multiplexer
@@ -51,23 +54,19 @@ impl StreamMultiplexer {
         port: u16,
         socks5_sender: mpsc::UnboundedSender<Bytes>,
     ) -> Result<(StreamId, oneshot::Receiver<()>), String> {
-        // Allocate stream ID
         let stream_id = rand::random::<u32>();
-
-        // Create ACK notification channel
         let (ack_tx, ack_rx) = oneshot::channel();
 
-        // Store stream
         let stream = Stream {
             stream_id,
             device_id: device_id.to_string(),
             socks5_sender,
             close_notify: Some(ack_tx),
+            created_at: Instant::now(),
         };
 
         self.streams.insert(stream_id, stream);
 
-        // Send OPEN frame to device
         let open_frame = Frame::open(stream_id, host, port);
         if let Some(device) = self.device_registry.get_device(device_id) {
             device
@@ -85,41 +84,28 @@ impl StreamMultiplexer {
     }
 
     /// Handle a frame received from a device
-    ///
-    /// Routes DATA frames to SOCKS5 client, handles CLOSE/ERROR
     pub fn handle_device_frame(&self, device_id: &str, frame: Frame) {
         let stream_id = frame.stream_id;
 
         match frame.frame_type {
             FrameType::Data => {
-                // Check if this is an ACK for OPEN (empty DATA with ACK flag)
                 if frame.flags.has_ack() && frame.payload.is_empty() {
                     debug!("Received OPEN ACK for stream {}", stream_id);
-                    // Signal ACK received
-                    if let Some((_, mut stream)) = self.streams.remove(&stream_id) {
-                        if let Some(ack_tx) = stream.close_notify.take() {
+                    // Fix Bug #2: update in-place instead of remove/reinsert
+                    if let Some(mut entry) = self.streams.get_mut(&stream_id) {
+                        if let Some(ack_tx) = entry.close_notify.take() {
                             let _ = ack_tx.send(());
                         }
-                        // Re-insert stream without the ack_tx
-                        self.streams.insert(
-                            stream_id,
-                            Stream {
-                                stream_id: stream.stream_id,
-                                device_id: stream.device_id,
-                                socks5_sender: stream.socks5_sender,
-                                close_notify: None,
-                            },
-                        );
                     }
                 } else {
-                    // Regular data - route to SOCKS5 client
                     if let Some(stream) = self.streams.get(&stream_id) {
                         if let Err(e) = stream.socks5_sender.send(frame.payload.clone()) {
-                            error!("Failed to send data to SOCKS5 client: {}", e);
+                            error!("Failed to send data to client: {}", e);
+                            drop(stream); // Release DashMap read lock before close
                             self.close_stream(stream_id, device_id);
                         } else {
                             debug!(
-                                "Routed {} bytes from device to SOCKS5 (stream {})",
+                                "Routed {} bytes from device to client (stream {})",
                                 frame.payload.len(),
                                 stream_id
                             );
@@ -134,7 +120,7 @@ impl StreamMultiplexer {
             }
 
             FrameType::Close => {
-                info!("Device closed stream {}", stream_id);
+                debug!("Device closed stream {}", stream_id);
                 self.close_stream(stream_id, device_id);
             }
 
@@ -157,7 +143,7 @@ impl StreamMultiplexer {
         }
     }
 
-    /// Send data from SOCKS5 client to device
+    /// Send data from client to device
     pub fn send_to_device(&self, stream_id: StreamId, data: Bytes) -> Result<(), String> {
         if let Some(stream) = self.streams.get(&stream_id) {
             let device_id = stream.device_id.clone();
@@ -169,7 +155,7 @@ impl StreamMultiplexer {
                     .send_frame(data_frame)
                     .map_err(|e| format!("Failed to send DATA to device: {}", e))?;
                 debug!(
-                    "Sent {} bytes from SOCKS5 to device (stream {})",
+                    "Sent {} bytes from client to device (stream {})",
                     data.len(),
                     stream_id
                 );
@@ -182,18 +168,25 @@ impl StreamMultiplexer {
         }
     }
 
-    /// Close a stream
+    /// Close and remove a stream
     pub fn close_stream(&self, stream_id: StreamId, device_id: &str) {
         if let Some((_, _stream)) = self.streams.remove(&stream_id) {
-            // Send CLOSE frame to device
+            // Dropping _stream drops the socks5_sender, which causes
+            // the relay loop's recv() to return None and exit cleanly.
             if let Some(device) = self.device_registry.get_device(device_id) {
                 let close_frame = Frame::close(stream_id);
                 if let Err(e) = device.send_frame(close_frame) {
                     error!("Failed to send CLOSE to device: {}", e);
                 }
             }
+            debug!("Closed stream {}", stream_id);
+        }
+    }
 
-            info!("Closed stream {}", stream_id);
+    /// Remove a stream without sending CLOSE to device (used when relay loop exits)
+    pub fn remove_stream(&self, stream_id: StreamId) {
+        if self.streams.remove(&stream_id).is_some() {
+            debug!("Removed stream {} (relay exited)", stream_id);
         }
     }
 
@@ -203,11 +196,71 @@ impl StreamMultiplexer {
     }
 
     /// Get number of active streams for a specific device
+    /// Fix Bug #4: collect device IDs first to avoid nested DashMap locks
     pub fn device_stream_count(&self, device_id: &str) -> usize {
         self.streams
             .iter()
             .filter(|entry| entry.value().device_id == device_id)
             .count()
+    }
+
+    /// Remove all streams belonging to a device (called on device disconnect)
+    pub fn close_all_device_streams(&self, device_id: &str) -> usize {
+        let stream_ids: Vec<StreamId> = self
+            .streams
+            .iter()
+            .filter(|entry| entry.value().device_id == device_id)
+            .map(|entry| *entry.key())
+            .collect();
+        let count = stream_ids.len();
+        for id in stream_ids {
+            // Removing drops the socks5_sender, causing relay loops to exit
+            self.streams.remove(&id);
+        }
+        if count > 0 {
+            info!("Cleaned up {} orphaned streams for device {}", count, device_id);
+        }
+        count
+    }
+
+    /// Periodic cleanup: remove streams with dead senders or that exceeded max age.
+    /// Returns number of streams removed.
+    pub fn cleanup_stale_streams(&self, max_age_secs: u64) -> usize {
+        let now = Instant::now();
+        let mut removed = 0;
+
+        let stale_ids: Vec<(StreamId, String)> = self
+            .streams
+            .iter()
+            .filter(|entry| {
+                let stream = entry.value();
+                // Dead sender (client disconnected but stream wasn't cleaned up)
+                stream.socks5_sender.is_closed()
+                    // Or stream exceeded max age (hung connection)
+                    || now.duration_since(stream.created_at).as_secs() > max_age_secs
+            })
+            .map(|entry| (*entry.key(), entry.value().device_id.clone()))
+            .collect();
+
+        for (stream_id, device_id) in stale_ids {
+            if let Some((_, _stream)) = self.streams.remove(&stream_id) {
+                // Send CLOSE to device for stale streams
+                if let Some(device) = self.device_registry.get_device(&device_id) {
+                    let _ = device.send_frame(Frame::close(stream_id));
+                }
+                removed += 1;
+            }
+        }
+
+        if removed > 0 {
+            info!(
+                "Cleaned up {} stale streams ({} remaining)",
+                removed,
+                self.streams.len()
+            );
+        }
+
+        removed
     }
 }
 
@@ -217,7 +270,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_stream_lifecycle() {
-        // This is a minimal test - full integration tests will be in main tests
         let db = crate::db::Database::open(":memory:").unwrap();
         let registry = crate::device_ws::DeviceRegistry::new(db);
         let mux = StreamMultiplexer::new(registry);

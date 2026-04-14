@@ -104,8 +104,23 @@ async fn handle_client(
         headers.push(line);
     }
 
-    // Parse Proxy-Authorization header
-    let proxy_user_id = parse_proxy_authorization(&headers, &db).await?;
+    // Parse Proxy-Authorization header — send 407 on failure so clients
+    // (like Chrome CDP Fetch.authRequired) can retry with credentials.
+    let proxy_user_id = match parse_proxy_authorization(&headers, &db).await {
+        Ok(id) => id,
+        Err(
+            e @ HttpProxyError::AuthenticationRequired
+            | e @ HttpProxyError::AuthenticationFailed
+            | e @ HttpProxyError::InvalidAuthentication(_),
+        ) => {
+            let response = b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"BentoProxy\"\r\n\r\n";
+            let stream = reader.into_inner();
+            let mut stream = stream;
+            stream.write_all(response).await?;
+            return Err(e);
+        }
+        Err(e) => return Err(e),
+    };
 
     // Check if port is allowed
     if is_port_blocked(port) {
@@ -117,9 +132,9 @@ async fn handle_client(
         return Err(HttpProxyError::PortBlocked(port));
     }
 
-    // Get an available device
+    // Get best available device (least-connections with capacity check)
     let device_session = registry
-        .get_any_device()
+        .get_best_device(&mux)
         .ok_or(HttpProxyError::NoDevicesAvailable)?;
 
     debug!("Selected device {} for proxy", device_session.device_id);
@@ -216,6 +231,9 @@ async fn handle_client(
         } => result,
     };
 
+    // Always clean up stream when relay exits — prevents zombie streams (Bug #1)
+    mux.remove_stream(stream_id);
+
     // End flow with byte counts
     if let Err(e) = db.end_flow(flow_id, Some((bytes_up, bytes_down))) {
         error!("Failed to end flow {}: {}", flow_id, e);
@@ -225,9 +243,6 @@ async fn handle_client(
         "HTTP CONNECT flow ended: stream_id={}, bytes_up={}, bytes_down={}",
         stream_id, bytes_up, bytes_down
     );
-
-    // Close stream in multiplexer
-    mux.close_stream(stream_id, &device_session.device_id);
 
     relay_result
 }
