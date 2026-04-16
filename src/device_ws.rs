@@ -53,9 +53,12 @@ impl DeviceRegistry {
         self.devices.insert(device_id, session);
     }
 
-    /// Unregister a disconnected device
-    fn unregister(&self, device_id: &str) {
-        self.devices.remove(device_id);
+    /// Unregister a disconnected device, but only if the session_nonce matches
+    /// (prevents a stale cleanup from removing a newer reconnected session)
+    fn unregister(&self, device_id: &str, session_nonce: u64) {
+        self.devices.remove_if(device_id, |_, session| {
+            session.session_nonce == session_nonce
+        });
     }
 
     pub fn count(&self) -> usize {
@@ -69,6 +72,7 @@ pub struct DeviceSession {
     pub device_id: String,
     pub sender: mpsc::UnboundedSender<Frame>,
     pub max_conns: usize,
+    pub session_nonce: u64,
 }
 
 impl DeviceSession {
@@ -144,14 +148,19 @@ async fn handle_device_connection(socket: WebSocket, registry: DeviceRegistry, m
     // Create channel for sending frames to device
     let (tx, mut rx) = mpsc::unbounded_channel::<Frame>();
 
+    // Unique nonce for this session — used to prevent stale cleanup from
+    // removing a newer reconnected session
+    let session_nonce: u64 = rand::random();
+
     // Create device session
     let session = DeviceSession {
         device_id: device_id.clone(),
         sender: tx,
         max_conns,
+        session_nonce,
     };
 
-    // Register device in registry
+    // Register device in registry (replaces any previous session)
     registry.register(device_id.clone(), session);
 
     info!("Device session started: {}", device_id);
@@ -285,9 +294,10 @@ async fn handle_device_connection(socket: WebSocket, registry: DeviceRegistry, m
         }
     }
 
-    // Cleanup
+    // Cleanup — only unregister if this is still OUR session (not a newer reconnection)
     info!("Device disconnected: {}", device_id);
-    registry.unregister(&device_id);
+    mux.close_all_device_streams(&device_id);
+    registry.unregister(&device_id, session_nonce);
 
     // End database session
     if let Err(e) = registry.db.end_device_session(db_session_id, Some("disconnect")) {
