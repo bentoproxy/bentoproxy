@@ -28,6 +28,9 @@ const PENDING_CLAIM_TTL_SECS: i64 = 24 * 60 * 60;
 /// else's unclaimed nodes.
 const MAX_CLAIM_ATTEMPTS: i64 = 10;
 const CLAIM_ATTEMPT_WINDOW_SECS: i64 = 15 * 60;
+/// Minimum gap between speed tests on one device. Tests put real traffic on a
+/// volunteer's home connection, so they stay occasional and owner-initiated.
+const SPEEDTEST_COOLDOWN_SECS: i64 = 5 * 60;
 
 /// Shared application state
 #[derive(Clone)]
@@ -35,6 +38,7 @@ pub struct AppState {
     pub db: Database,
     pub registry: DeviceRegistry,
     pub mux: StreamMultiplexer,
+    pub meters: crate::metrics::DeviceMeters,
     pub jwt_manager: Arc<JwtManager>,
     pub socks5_host: String,
     pub socks5_port: u16,
@@ -217,7 +221,16 @@ pub async fn dashboard(
             let devices = match state.db.get_devices_for_owner(&claims.sub) {
                 Ok(devices) => devices
                     .into_iter()
-                    .map(|d| DeviceInfo {
+                    .map(|d| {
+                        let traffic = state.db.device_traffic(&d.id).unwrap_or_default();
+                        let live = state.meters.snapshot(&d.id);
+                        DeviceInfo {
+                        streams: state.mux.device_stream_count(&d.id),
+                        down_bps: live.down_bps,
+                        up_bps: live.up_bps,
+                        down_today: human_bytes(traffic.bytes_down_today as u64),
+                        up_today: human_bytes(traffic.bytes_up_today as u64),
+                        peak_down: human_rate(traffic.peak_down_bps as u64),
                         id: d.id.clone(),
                         name: d.name.unwrap_or_else(|| "Unnamed".to_string()),
                         is_active: d.is_active,
@@ -232,7 +245,7 @@ pub async fn dashboard(
                                 .format("%Y-%m-%d %H:%M")
                                 .to_string()
                         }).unwrap_or_else(|| "Never".to_string()),
-                    })
+                    }})
                     .collect(),
                 Err(e) => {
                     error!("Failed to get devices: {}", e);
@@ -505,3 +518,167 @@ pub async fn claim_device(
     }
 }
 
+/// Per-device live throughput, polled by the dashboard.
+///
+/// Rates come from in-memory counters, so an ongoing transfer is visible;
+/// daily totals come from recorded flows.
+pub async fn device_stats(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+) -> Response {
+    if claims.role != UserRole::DeviceOwner {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "not a device owner" }))).into_response();
+    }
+
+    let devices = match state.db.get_devices_for_owner(&claims.sub) {
+        Ok(devices) => devices,
+        Err(e) => {
+            error!("failed to list devices for {}: {}", claims.sub, e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "could not read devices" })),
+            )
+                .into_response();
+        }
+    };
+
+    let stats: Vec<_> = devices
+        .into_iter()
+        .map(|d| {
+            let live = state.meters.snapshot(&d.id);
+            let traffic = state.db.device_traffic(&d.id).unwrap_or_default();
+            json!({
+                "device_id": d.id,
+                "online": state.registry.get_device(&d.id).is_some(),
+                "streams": state.mux.device_stream_count(&d.id),
+                "down_bps": live.down_bps,
+                "up_bps": live.up_bps,
+                "down_bps_1m": live.down_bps_1m,
+                "up_bps_1m": live.up_bps_1m,
+                "down_today": human_bytes(traffic.bytes_down_today as u64),
+                "up_today": human_bytes(traffic.bytes_up_today as u64),
+                // Raw figures too, so the page can total them up itself.
+                "down_bytes_today": traffic.bytes_down_today,
+                "up_bytes_today": traffic.bytes_up_today,
+                "flows_today": traffic.flows_today,
+                "peak_down": human_rate(traffic.peak_down_bps as u64),
+                "down_rate": human_rate(live.down_bps),
+                "up_rate": human_rate(live.up_bps),
+            })
+        })
+        .collect();
+
+    (StatusCode::OK, Json(json!({ "devices": stats }))).into_response()
+}
+
+/// Bytes as a short human string, e.g. "1.4 MB".
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [(&str, u64); 4] = [("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10), ("B", 1)];
+
+    for (unit, size) in UNITS {
+        if bytes >= size {
+            // Whole bytes read better without a decimal point.
+            return if size == 1 {
+                format!("{bytes} B")
+            } else {
+                format!("{:.1} {unit}", bytes as f64 / size as f64)
+            };
+        }
+    }
+
+    "0 B".to_string()
+}
+
+/// A rate as a short human string, e.g. "1.1 MB/s".
+fn human_rate(bytes_per_sec: u64) -> String {
+    if bytes_per_sec == 0 {
+        return "—".to_string();
+    }
+    format!("{}/s", human_bytes(bytes_per_sec))
+}
+
+/// Measure one device's download speed, on request.
+///
+/// Never called on a schedule: the traffic lands on the owner's home
+/// connection, so a test happens only when they ask for one, and not more
+/// often than the cooldown allows.
+pub async fn speed_test(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(device_id): Path<String>,
+) -> Response {
+    if claims.role != UserRole::DeviceOwner {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "only device owners can test a device" })),
+        )
+            .into_response();
+    }
+
+    match state.db.device_belongs_to(&device_id, &claims.sub) {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "no such device" })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!("ownership check failed for {}: {}", device_id, e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "could not check the device" })),
+            )
+                .into_response();
+        }
+    }
+
+    if state.registry.get_device(&device_id).is_none() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "that node is offline" })),
+        )
+            .into_response();
+    }
+
+    // Respect the cooldown, measured from the last recorded attempt.
+    if let Ok(Some(previous)) = state.db.latest_speed_test(&device_id) {
+        let age = chrono::Utc::now().timestamp() - previous.ran_at;
+        if age < SPEEDTEST_COOLDOWN_SECS {
+            let wait = SPEEDTEST_COOLDOWN_SECS - age;
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "error": format!("tested {}s ago — try again in {}s", age, wait)
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    let outcome = crate::speedtest::run(&state.mux, &device_id, crate::speedtest::DEFAULT_BYTES)
+        .await
+        .map_err(|e| e.to_string());
+
+    if let Err(e) = state.db.record_speed_test(&device_id, &outcome) {
+        error!("could not store the speed test for {}: {}", device_id, e);
+    }
+
+    match outcome {
+        Ok(measurement) => (
+            StatusCode::OK,
+            Json(json!({
+                "down_bps": measurement.down_bps,
+                "down_rate": human_rate(measurement.down_bps),
+                "bytes": measurement.bytes,
+                "duration_ms": measurement.duration_ms,
+            })),
+        )
+            .into_response(),
+        Err(e) => {
+            warn!("speed test on {} failed: {}", device_id, e);
+            (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))).into_response()
+        }
+    }
+}

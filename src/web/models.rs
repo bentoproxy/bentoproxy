@@ -50,6 +50,16 @@ pub struct DeviceInfo {
     pub is_online: bool,
     pub created_at: String,
     pub last_seen_at: String,  // "Never" if None
+    /// Streams in flight right now.
+    pub streams: usize,
+    /// Live rates in bytes per second, averaged over the last 10 seconds.
+    pub down_bps: u64,
+    pub up_bps: u64,
+    /// Traffic since midnight, pre-formatted for display.
+    pub down_today: String,
+    pub up_today: String,
+    /// Best sustained rate ever recorded for this device.
+    pub peak_down: String,
 }
 
 #[derive(Debug, Serialize)]

@@ -1,241 +1,106 @@
 {% extends "base.html" %}
 
-{% block title %}Proxy User Dashboard - BentoProxy{% endblock %}
+{% block title %}Proxy access — BentoProxy{% endblock %}
 
 {% block nav %}
-<span class="text-gray-700 px-3 py-2 text-sm">{{ email }}</span>
-<a href="/logout" class="text-gray-700 hover:text-indigo-600 px-3 py-2 rounded-md text-sm font-medium">Logout</a>
+<span class="nav-email">{{ email }}</span>
+<a href="/logout" class="nav-link">Log out</a>
 {% endblock %}
 
 {% block content %}
-<div class="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-    <div class="px-4 py-6 sm:px-0">
-        <h1 class="text-3xl font-bold text-gray-900 mb-6">Proxy User Dashboard</h1>
+<section class="container section stack-lg">
+    <div class="stack-sm">
+        <h1>Proxy access</h1>
+        <p class="muted">Point any tool that speaks SOCKS5 or HTTP CONNECT at the
+        network below.</p>
+    </div>
 
-        <!-- Proxy Type Selector -->
-        <div class="bg-white shadow sm:rounded-lg mb-8">
-            <div class="border-b border-gray-200">
-                <nav class="-mb-px flex" aria-label="Tabs">
-                    <button onclick="showProxy('http')" id="tab-http" class="proxy-tab w-1/2 py-4 px-1 text-center border-b-2 border-indigo-500 font-medium text-sm text-indigo-600">
-                        HTTP CONNECT (Recommended)
-                    </button>
-                    <button onclick="showProxy('socks5')" id="tab-socks5" class="proxy-tab w-1/2 py-4 px-1 text-center border-b-2 border-transparent font-medium text-sm text-gray-500 hover:text-gray-700 hover:border-gray-300">
-                        SOCKS5 (Advanced)
-                    </button>
-                </nav>
-            </div>
-
-            <!-- HTTP CONNECT Details -->
-            <div id="proxy-http" class="proxy-content">
-                <div class="px-4 py-5 sm:px-6">
-                    <h3 class="text-lg leading-6 font-medium text-gray-900">HTTP CONNECT Proxy</h3>
-                    <p class="mt-1 max-w-2xl text-sm text-gray-500">Works with most tools and libraries (curl, requests, browsers)</p>
-                </div>
-                <div class="border-t border-gray-200 px-4 py-5 sm:p-0">
-                    <dl class="sm:divide-y sm:divide-gray-200">
-                        <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
-                            <dt class="text-sm font-medium text-gray-500">Proxy URL</dt>
-                            <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 font-mono">
-                                http://proxy.bentoproxy.com
-                            </dd>
-                        </div>
-                        <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
-                            <dt class="text-sm font-medium text-gray-500">Authentication</dt>
-                            <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 font-mono">
-                                Basic (username: api, password: your API key)
-                            </dd>
-                        </div>
-                        <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
-                            <dt class="text-sm font-medium text-gray-500">API Key</dt>
-                            <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">
-                                <div class="flex items-center space-x-2">
-                                    <code id="api-key" class="flex-1 bg-gray-100 px-3 py-2 rounded font-mono text-sm">{{ api_key }}</code>
-                                    <button onclick="copyApiKey()" class="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm leading-4 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                                        Copy
-                                    </button>
-                                </div>
-                            </dd>
-                        </div>
-                    </dl>
-                </div>
-            </div>
-
-            <!-- SOCKS5 Details -->
-            <div id="proxy-socks5" class="proxy-content hidden">
-                <div class="px-4 py-5 sm:px-6">
-                    <h3 class="text-lg leading-6 font-medium text-gray-900">SOCKS5 Proxy</h3>
-                    <p class="mt-1 max-w-2xl text-sm text-gray-500">Lower-level protocol, works with any TCP connection</p>
-                </div>
-                <div class="border-t border-gray-200 px-4 py-5 sm:p-0">
-                    <dl class="sm:divide-y sm:divide-gray-200">
-                        <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
-                            <dt class="text-sm font-medium text-gray-500">SOCKS5 Host</dt>
-                            <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 font-mono">
-                                {{ socks5_host }}
-                            </dd>
-                        </div>
-                        <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
-                            <dt class="text-sm font-medium text-gray-500">SOCKS5 Port</dt>
-                            <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 font-mono">
-                                {{ socks5_port }}
-                            </dd>
-                        </div>
-                        <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
-                            <dt class="text-sm font-medium text-gray-500">Username</dt>
-                            <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 font-mono">
-                                api
-                            </dd>
-                        </div>
-                        <div class="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
-                            <dt class="text-sm font-medium text-gray-500">API Key (Password)</dt>
-                            <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">
-                                <div class="flex items-center space-x-2">
-                                    <code id="api-key-socks5" class="flex-1 bg-gray-100 px-3 py-2 rounded font-mono text-sm">{{ api_key }}</code>
-                                    <button onclick="copyApiKeySocks5()" class="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm leading-4 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                                        Copy
-                                    </button>
-                                </div>
-                            </dd>
-                        </div>
-                    </dl>
-                </div>
-            </div>
+    <div class="card">
+        <div class="card-header">
+            <h2>Your API key</h2>
+            <p class="muted small" style="margin-top: var(--space-2)">
+                Used as the proxy password. Keep it private — anyone with it can
+                route traffic as you.
+            </p>
         </div>
-
-        <!-- Usage Examples -->
-        <div class="bg-white shadow sm:rounded-lg mb-8">
-            <div class="px-4 py-5 sm:p-6">
-                <h3 class="text-lg leading-6 font-medium text-gray-900">Usage Examples</h3>
-
-                <!-- HTTP CONNECT Examples -->
-                <div id="examples-http" class="examples-content mt-4">
-                    <p class="mb-4 text-sm text-gray-500">Use HTTP CONNECT proxy with curl, Python, or environment variables:</p>
-
-                    <div class="mb-4">
-                        <p class="font-medium text-gray-700 mb-2">curl example:</p>
-                        <div class="bg-gray-900 text-gray-100 rounded-md p-4 overflow-x-auto">
-                            <code>curl -x http://proxy.bentoproxy.com \<br>
-  --proxy-header "Proxy-Authorization: Basic $(echo -n 'api:{{ api_key }}' | base64)" \<br>
-  https://ifconfig.me</code>
-                        </div>
-                    </div>
-
-                    <div class="mb-4">
-                        <p class="font-medium text-gray-700 mb-2">Python requests example:</p>
-                        <div class="bg-gray-900 text-gray-100 rounded-md p-4 overflow-x-auto">
-                            <code>import requests<br><br>
-proxies = {<br>
-    'http': 'http://api:{{ api_key }}@proxy.bentoproxy.com',<br>
-    'https': 'http://api:{{ api_key }}@proxy.bentoproxy.com'<br>
-}<br><br>
-response = requests.get('https://ifconfig.me', proxies=proxies)<br>
-print(response.text)  # Shows residential IP</code>
-                        </div>
-                    </div>
-
-                    <div class="mb-4">
-                        <p class="font-medium text-gray-700 mb-2">Environment variables (works with most tools):</p>
-                        <div class="bg-gray-900 text-gray-100 rounded-md p-4 overflow-x-auto">
-                            <code>export http_proxy="http://api:{{ api_key }}@proxy.bentoproxy.com"<br>
-export https_proxy="http://api:{{ api_key }}@proxy.bentoproxy.com"<br><br>
-curl https://ifconfig.me  # Now uses proxy automatically</code>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- SOCKS5 Examples -->
-                <div id="examples-socks5" class="examples-content hidden mt-4">
-                    <p class="mb-4 text-sm text-gray-500">Use SOCKS5 proxy with curl, Python, or any application that supports SOCKS5:</p>
-
-                    <div class="mb-4">
-                        <p class="font-medium text-gray-700 mb-2">curl example:</p>
-                        <div class="bg-gray-900 text-gray-100 rounded-md p-4 overflow-x-auto">
-                            <code>curl --socks5-hostname {{ socks5_host }}:{{ socks5_port }} \<br>
-  --proxy-user api:{{ api_key }} \<br>
-  https://ifconfig.me</code>
-                        </div>
-                    </div>
-
-                    <div class="mb-4">
-                        <p class="font-medium text-gray-700 mb-2">Python example:</p>
-                        <div class="bg-gray-900 text-gray-100 rounded-md p-4 overflow-x-auto">
-                            <code>import requests<br><br>
-proxies = {<br>
-    'http': 'socks5://api:{{ api_key }}@{{ socks5_host }}:{{ socks5_port }}',<br>
-    'https': 'socks5://api:{{ api_key }}@{{ socks5_host }}:{{ socks5_port }}'<br>
-}<br><br>
-response = requests.get('https://ifconfig.me', proxies=proxies)<br>
-print(response.text)  # Shows residential IP</code>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Stats Cards -->
-        <div class="grid grid-cols-1 gap-5 sm:grid-cols-3">
-            <div class="bg-white overflow-hidden shadow rounded-lg">
-                <div class="px-4 py-5 sm:p-6">
-                    <dt class="text-sm font-medium text-gray-500 truncate">Usage (30d)</dt>
-                    <dd class="mt-1 text-3xl font-semibold text-gray-900">0 GB</dd>
-                </div>
-            </div>
-            <div class="bg-white overflow-hidden shadow rounded-lg">
-                <div class="px-4 py-5 sm:p-6">
-                    <dt class="text-sm font-medium text-gray-500 truncate">Cost (30d)</dt>
-                    <dd class="mt-1 text-3xl font-semibold text-gray-900">$0.00</dd>
-                </div>
-            </div>
-            <div class="bg-white overflow-hidden shadow rounded-lg">
-                <div class="px-4 py-5 sm:p-6">
-                    <dt class="text-sm font-medium text-gray-500 truncate">Requests (30d)</dt>
-                    <dd class="mt-1 text-3xl font-semibold text-gray-900">0</dd>
-                </div>
+        <div class="card-body stack">
+            <code class="code" id="apiKey">{{ api_key }}</code>
+            <div class="row">
+                <button class="btn btn-secondary btn-sm" onclick="copyKey()">Copy key</button>
+                <span id="copyNote" class="small muted" hidden>Copied</span>
             </div>
         </div>
     </div>
-</div>
+
+    <div class="card">
+        <div class="card-header">
+            <h2>SOCKS5</h2>
+            <p class="muted small" style="margin-top: var(--space-2)">
+                Preferred: the target's hostname is resolved at the exit node,
+                so lookups come from the same connection as the traffic.
+            </p>
+        </div>
+        <div class="card-body">
+            <table class="table">
+                <tbody>
+                    <tr>
+                        <td data-label="Host"><span class="mono">{{ socks5_host }}</span></td>
+                    </tr>
+                    <tr>
+                        <td data-label="Port"><span class="mono">{{ socks5_port }}</span></td>
+                    </tr>
+                    <tr>
+                        <td data-label="Username"><span class="mono">api</span></td>
+                    </tr>
+                    <tr>
+                        <td data-label="Password"><span class="mono">your API key</span></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h2>Examples</h2>
+        </div>
+        <div class="card-body stack">
+            <div class="field">
+                <span class="label">curl</span>
+                <code class="code">curl -x socks5h://api:{{ api_key }}@{{ socks5_host }}:{{ socks5_port }} \
+  https://api.ipify.org</code>
+            </div>
+
+            <div class="field">
+                <span class="label">Python (requests)</span>
+                <code class="code">proxies = {
+    "http":  "socks5h://api:{{ api_key }}@{{ socks5_host }}:{{ socks5_port }}",
+    "https": "socks5h://api:{{ api_key }}@{{ socks5_host }}:{{ socks5_port }}",
+}
+requests.get("https://api.ipify.org", proxies=proxies)</code>
+            </div>
+
+            <div class="field">
+                <span class="label">Environment variables</span>
+                <code class="code">export ALL_PROXY="socks5h://api:{{ api_key }}@{{ socks5_host }}:{{ socks5_port }}"
+curl https://api.ipify.org   # now exits through a residential node</code>
+            </div>
+
+            <p class="small muted">
+                Use <span class="code-inline">socks5h://</span>, not
+                <span class="code-inline">socks5://</span> — the <em>h</em> keeps
+                DNS resolution at the exit node instead of on your machine.
+            </p>
+        </div>
+    </div>
+</section>
 
 <script>
-function copyApiKey() {
-    const apiKey = document.getElementById('api-key').textContent;
-    navigator.clipboard.writeText(apiKey).then(() => {
-        alert('API key copied to clipboard!');
-    }).catch(err => {
-        console.error('Failed to copy:', err);
-    });
-}
-
-function copyApiKeySocks5() {
-    const apiKey = document.getElementById('api-key-socks5').textContent;
-    navigator.clipboard.writeText(apiKey).then(() => {
-        alert('API key copied to clipboard!');
-    }).catch(err => {
-        console.error('Failed to copy:', err);
-    });
-}
-
-function showProxy(type) {
-    // Update tab styling
-    const tabs = document.querySelectorAll('.proxy-tab');
-    tabs.forEach(tab => {
-        tab.classList.remove('border-indigo-500', 'text-indigo-600');
-        tab.classList.add('border-transparent', 'text-gray-500');
-    });
-
-    const activeTab = document.getElementById(`tab-${type}`);
-    activeTab.classList.remove('border-transparent', 'text-gray-500');
-    activeTab.classList.add('border-indigo-500', 'text-indigo-600');
-
-    // Show/hide proxy details
-    document.getElementById('proxy-http').classList.add('hidden');
-    document.getElementById('proxy-socks5').classList.add('hidden');
-    document.getElementById(`proxy-${type}`).classList.remove('hidden');
-
-    // Show/hide examples
-    document.getElementById('examples-http').classList.add('hidden');
-    document.getElementById('examples-socks5').classList.add('hidden');
-    document.getElementById(`examples-${type}`).classList.remove('hidden');
+function copyKey() {
+    const note = document.getElementById('copyNote');
+    navigator.clipboard.writeText(document.getElementById('apiKey').textContent.trim());
+    note.hidden = false;
+    setTimeout(() => { note.hidden = true; }, 2000);
 }
 </script>
 {% endblock %}

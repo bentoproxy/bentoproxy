@@ -1,203 +1,288 @@
 {% extends "base.html" %}
 
-{% block title %}Device Owner Dashboard - BentoProxy{% endblock %}
+{% block title %}Nodes — BentoProxy{% endblock %}
 
 {% block nav %}
-<span class="text-gray-700 px-3 py-2 text-sm">{{ email }}</span>
-<a href="/logout" class="text-gray-700 hover:text-indigo-600 px-3 py-2 rounded-md text-sm font-medium">Logout</a>
+<span class="nav-email">{{ email }}</span>
+<a href="/logout" class="nav-link">Log out</a>
 {% endblock %}
 
 {% block content %}
-<div class="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-    <div class="px-4 py-6 sm:px-0">
-        <h1 class="text-3xl font-bold text-gray-900 mb-6">Device Owner Dashboard</h1>
+<section class="container section stack-lg">
+    <div class="stack-sm">
+        <h1>Your nodes</h1>
+        <p class="muted">Exit nodes you own, and what they are relaying.</p>
+    </div>
 
-        <!-- Stats Cards -->
-        <div class="grid grid-cols-1 gap-5 sm:grid-cols-3 mb-8">
-            <div class="bg-white overflow-hidden shadow rounded-lg">
-                <div class="px-4 py-5 sm:p-6">
-                    <dt class="text-sm font-medium text-gray-500 truncate">Total Devices</dt>
-                    <dd class="mt-1 text-3xl font-semibold text-gray-900">{{ total_count }}</dd>
-                </div>
+    <div class="card">
+        <div class="stat-grid">
+            <div class="stat">
+                <div class="stat-value">{{ online_count }}</div>
+                <div class="stat-label">Online now</div>
             </div>
-            <div class="bg-white overflow-hidden shadow rounded-lg">
-                <div class="px-4 py-5 sm:p-6">
-                    <dt class="text-sm font-medium text-gray-500 truncate">Online Devices</dt>
-                    <dd class="mt-1 text-3xl font-semibold text-gray-900">
-                        {{ online_count }}
-                    </dd>
-                </div>
+            <div class="stat">
+                <div class="stat-value">{{ total_count }}</div>
+                <div class="stat-label">Registered</div>
             </div>
-            <div class="bg-white overflow-hidden shadow rounded-lg">
-                <div class="px-4 py-5 sm:p-6">
-                    <dt class="text-sm font-medium text-gray-500 truncate">Est. Earnings (30d)</dt>
-                    <dd class="mt-1 text-3xl font-semibold text-gray-900">$0.00</dd>
-                </div>
+            <div class="stat">
+                <div class="stat-value" id="totalDown">—</div>
+                <div class="stat-label">Downloaded today</div>
             </div>
-        </div>
-
-        <!-- Devices Table -->
-        <div class="bg-white shadow overflow-hidden sm:rounded-lg">
-            <div id="claimPanel" class="px-4 py-5 sm:px-6 border-b border-gray-200 bg-indigo-50">
-                <h3 class="text-lg leading-6 font-medium text-gray-900">Add a node</h3>
-                <p class="mt-1 text-sm text-gray-600">
-                    Power on your node, connect it to your WiFi, then enter the setup code
-                    printed on it. No tokens to copy.
-                </p>
-
-                {% if pending.len() > 0 %}
-                <p class="mt-3 text-sm text-gray-700">
-                    <span class="font-medium">{{ pending.len() }}</span>
-                    node{% if pending.len() > 1 %}s{% endif %} waiting to be claimed:
-                    {% for node in pending %}
-                    <span class="inline-flex items-center px-2 py-0.5 ml-1 rounded text-xs font-mono bg-white border border-gray-300">{{ node.model }} · {{ node.hw_id }}</span>
-                    {% endfor %}
-                </p>
-                {% else %}
-                <p class="mt-3 text-sm text-gray-500">
-                    No node is waiting right now. A node appears here within a few seconds
-                    of joining your WiFi.
-                </p>
-                {% endif %}
-
-                <div class="mt-4 flex gap-3 items-start">
-                    <input id="claimCode" type="text" placeholder="Setup code (e.g. Z6YVD2ZM)"
-                           maxlength="32" autocapitalize="characters" autocomplete="off"
-                           class="block w-64 rounded-md border-gray-300 shadow-sm font-mono uppercase focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
-                    <button id="claimButton" onclick="claimDevice()"
-                            class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 border border-transparent rounded-md shadow-sm hover:bg-indigo-700">
-                        Claim node
-                    </button>
-                </div>
-                <p id="claimMessage" class="hidden mt-3 text-sm"></p>
-            </div>
-
-            <div class="px-4 py-5 sm:px-6 flex justify-between items-center">
-                <div>
-                    <h3 class="text-lg leading-6 font-medium text-gray-900">My Devices</h3>
-                    <p class="mt-1 max-w-2xl text-sm text-gray-500">Manage your ESP32 proxy nodes</p>
-                </div>
-                <button onclick="showAddDeviceModal()" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                    Add Device
-                </button>
-            </div>
-            <div class="border-t border-gray-200">
-                {% if total_count > 0 %}
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-50">
-                        <tr>
-                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                Device ID
-                            </th>
-                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                Name
-                            </th>
-                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                Status
-                            </th>
-                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                Last Seen
-                            </th>
-                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                Created
-                            </th>
-                        </tr>
-                    </thead>
-                    <tbody class="bg-white divide-y divide-gray-200">
-                        {% for device in devices %}
-                        <tr>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                                {{ device.id }}
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                {{ device.name }}
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap">
-                                {% if device.is_online %}
-                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                    <svg class="-ml-0.5 mr-1.5 h-2 w-2 text-green-400" fill="currentColor" viewBox="0 0 8 8">
-                                        <circle cx="4" cy="4" r="3" />
-                                    </svg>
-                                    Online
-                                </span>
-                                {% else %}
-                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
-                                    Offline
-                                </span>
-                                {% endif %}
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                {{ device.last_seen_at }}
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                {{ device.created_at }}
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-                {% else %}
-                <div class="px-6 py-12 text-center">
-                    <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
-                    </svg>
-                    <h3 class="mt-2 text-sm font-medium text-gray-900">No devices yet</h3>
-                    <p class="mt-1 text-sm text-gray-500">Get started by adding your first ESP32 device.</p>
-                    <div class="mt-6">
-                        <button onclick="showAddDeviceModal()" class="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                            Add Device
-                        </button>
-                    </div>
-                </div>
-                {% endif %}
+            <div class="stat">
+                <div class="stat-value" id="totalStreams">—</div>
+                <div class="stat-label">Active connections</div>
             </div>
         </div>
     </div>
-</div>
 
-<div id="deviceModal" class="hidden fixed inset-0 z-50 overflow-y-auto">
-    <div class="flex items-center justify-center min-h-screen px-4">
-        <div class="fixed inset-0 bg-gray-500 bg-opacity-75" onclick="closeDeviceModal()"></div>
-        <div class="relative bg-white rounded-lg shadow-xl max-w-lg w-full p-6">
-            <div id="deviceForm">
-                <h3 class="text-lg font-medium text-gray-900">Add a device</h3>
-                <p class="mt-1 text-sm text-gray-500">Give it a name so you can tell your nodes apart.</p>
-                <input id="deviceName" type="text" placeholder="Living room ESP32"
-                       class="mt-4 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
-                <div class="mt-6 flex gap-3 justify-end">
-                    <button onclick="closeDeviceModal()" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50">Cancel</button>
-                    <button id="deviceSubmit" onclick="registerDevice()" class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 border border-transparent rounded-md hover:bg-indigo-700">Register</button>
-                </div>
-            </div>
-
-            <div id="deviceResult" class="hidden">
-                <h3 class="text-lg font-medium text-gray-900">Device registered</h3>
-                <p class="mt-1 text-sm text-gray-500">
-                    Enter these in your node's setup page, under Advanced. The token is
-                    shown only once.
-                </p>
-                <dl class="mt-4 space-y-3">
-                    <div>
-                        <dt class="text-xs font-medium text-gray-500 uppercase">Device ID</dt>
-                        <dd id="resultId" class="mt-1 font-mono text-sm break-all bg-gray-50 rounded p-2"></dd>
-                    </div>
-                    <div>
-                        <dt class="text-xs font-medium text-gray-500 uppercase">Device token</dt>
-                        <dd id="resultToken" class="mt-1 font-mono text-sm break-all bg-gray-50 rounded p-2"></dd>
-                    </div>
-                </dl>
-                <div class="mt-6 flex gap-3 justify-end">
-                    <button onclick="copyCredentials()" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50">Copy</button>
-                    <button onclick="location.reload()" class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 border border-transparent rounded-md hover:bg-indigo-700">Done</button>
-                </div>
-            </div>
-
-            <p id="deviceError" class="hidden mt-4 text-sm text-red-600"></p>
+    <!-- Claiming a node: the owner enters the code printed on the device. -->
+    <div class="card">
+        <div class="card-header card-accent">
+            <h2>Add a node</h2>
+            <p class="muted small" style="margin-top: var(--space-2)">
+                Power it on, connect it to your WiFi, then enter the setup code
+                printed on it. There are no tokens to copy.
+            </p>
         </div>
+        <div class="card-body stack">
+            {% if pending.len() > 0 %}
+            <p class="small">
+                <strong>{{ pending.len() }}</strong>
+                node{% if pending.len() > 1 %}s{% endif %} waiting to be claimed:
+                {% for node in pending %}
+                <span class="badge badge-warn">{{ node.model }} · {{ node.hw_id }}</span>
+                {% endfor %}
+            </p>
+            {% else %}
+            <p class="small muted">
+                No node is waiting. One appears here within a few seconds of
+                joining your WiFi.
+            </p>
+            {% endif %}
+
+            <div class="row">
+                <input id="claimCode" class="input mono" type="text"
+                       placeholder="Setup code" maxlength="32"
+                       autocapitalize="characters" autocomplete="off"
+                       style="flex: 1 1 200px; text-transform: uppercase">
+                <button id="claimButton" class="btn btn-primary" onclick="claimDevice()">
+                    Claim node
+                </button>
+            </div>
+            <p id="claimMessage" class="small" hidden></p>
+
+            <p class="small muted">
+                Running a desktop agent instead?
+                <a href="#" onclick="showAddDeviceModal(); return false;">Register it manually</a>.
+            </p>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h2>Nodes</h2>
+        </div>
+
+        {% if total_count > 0 %}
+        <div class="table-scroll">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Device</th>
+                        <th>Status</th>
+                        <th>Now</th>
+                        <th>Today</th>
+                        <th>Best</th>
+                        <th>Speed test</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for device in devices %}
+                    <tr>
+                        <td data-label="Device">
+                            <div>
+                                <div>{{ device.name }}</div>
+                                <div class="small muted mono">{{ device.id }}</div>
+                            </div>
+                        </td>
+                        <td data-label="Status">
+                            <div>
+                                {% if device.is_online %}
+                                <span class="badge badge-ok">Online</span>
+                                {% else %}
+                                <span class="badge">Offline</span>
+                                {% endif %}
+                                <div class="small muted" style="margin-top: var(--space-1)">
+                                    {{ device.last_seen_at }}
+                                </div>
+                            </div>
+                        </td>
+                        <td data-label="Now">
+                            <div class="small">
+                                <span class="mono" data-stat="down_rate" data-device="{{ device.id }}">—</span>
+                                <span class="muted">down</span><br>
+                                <span class="mono" data-stat="up_rate" data-device="{{ device.id }}">—</span>
+                                <span class="muted">up</span><br>
+                                <span class="muted">
+                                    <span data-stat="streams" data-device="{{ device.id }}">{{ device.streams }}</span>
+                                    connections
+                                </span>
+                            </div>
+                        </td>
+                        <td data-label="Today">
+                            <div class="small">
+                                <span class="mono" data-stat="down_today" data-device="{{ device.id }}">{{ device.down_today }}</span>
+                                <span class="muted">down</span><br>
+                                <span class="mono" data-stat="up_today" data-device="{{ device.id }}">{{ device.up_today }}</span>
+                                <span class="muted">up</span>
+                            </div>
+                        </td>
+                        <td data-label="Best">
+                            <div class="small">
+                                <span class="mono" data-stat="peak_down" data-device="{{ device.id }}">{{ device.peak_down }}</span>
+                                <div class="muted">observed</div>
+                            </div>
+                        </td>
+                        <td data-label="Speed test">
+                            <div>
+                                <button class="btn btn-secondary btn-sm"
+                                        id="speedtest-{{ device.id }}"
+                                        onclick="runSpeedTest('{{ device.id }}')"
+                                        {% if !device.is_online %}disabled{% endif %}>
+                                    Run test
+                                </button>
+                                <div id="speedresult-{{ device.id }}" class="small muted"
+                                     style="margin-top: var(--space-1)"></div>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="table-empty stack">
+            <h3>No nodes yet</h3>
+            <p class="muted small">Claim your first node with the code printed on it.</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <p class="small muted">
+        Speed tests run only when you press the button — never on their own, so
+        nothing unexpected appears on your home connection.
+    </p>
+</section>
+
+<!-- Manual registration, for nodes that cannot run the claim flow. -->
+<div class="modal" id="deviceModal" hidden>
+    <div class="modal-panel stack">
+        <div id="deviceForm" class="stack">
+            <h2>Register manually</h2>
+            <p class="muted small">
+                For a desktop agent or anything that cannot be claimed with a
+                code. You will copy its credentials into the agent's config.
+            </p>
+            <div class="field">
+                <label class="label" for="deviceName">Name</label>
+                <input class="input" id="deviceName" type="text" placeholder="Living room Pi">
+            </div>
+            <div class="row row-end">
+                <button class="btn btn-secondary" onclick="closeDeviceModal()">Cancel</button>
+                <button class="btn btn-primary" id="deviceSubmit" onclick="registerDevice()">Register</button>
+            </div>
+        </div>
+
+        <div id="deviceResult" class="stack" hidden>
+            <h2>Device registered</h2>
+            <p class="muted small">
+                The token is shown only once. Put both values in the agent's
+                configuration file.
+            </p>
+            <div class="field">
+                <span class="label">Device ID</span>
+                <code class="code" id="resultId"></code>
+            </div>
+            <div class="field">
+                <span class="label">Device token</span>
+                <code class="code" id="resultToken"></code>
+            </div>
+            <div class="row row-end">
+                <button class="btn btn-secondary" onclick="copyCredentials()">Copy</button>
+                <button class="btn btn-primary" onclick="location.reload()">Done</button>
+            </div>
+        </div>
+
+        <p id="deviceError" class="notice notice-error" hidden></p>
     </div>
 </div>
 
 <script>
+// Live figures come from in-memory counters on the orchestrator, so a transfer
+// in progress is visible instead of appearing only once it finishes.
+const STAT_FIELDS = ['down_rate', 'up_rate', 'streams', 'down_today', 'up_today', 'peak_down'];
+
+async function refreshStats() {
+    try {
+        const response = await fetch('/api/devices/stats');
+        if (!response.ok) return;
+        const { devices } = await response.json();
+
+        let streams = 0;
+        let downToday = 0;
+
+        for (const device of devices) {
+            for (const field of STAT_FIELDS) {
+                const cell = document.querySelector(`[data-stat="${field}"][data-device="${device.device_id}"]`);
+                if (cell) cell.textContent = device[field];
+            }
+            streams += device.streams;
+            downToday += device.down_bytes_today || 0;
+        }
+
+        document.getElementById('totalStreams').textContent = streams;
+        document.getElementById('totalDown').textContent = formatBytes(downToday);
+    } catch (e) {
+        // A missed poll is not worth reporting; the next one is 5s away.
+    }
+}
+
+function formatBytes(bytes) {
+    if (!bytes) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+    const value = bytes / Math.pow(1024, exponent);
+    return `${exponent === 0 ? value : value.toFixed(1)} ${units[exponent]}`;
+}
+
+refreshStats();
+setInterval(refreshStats, 5000);
+
+async function runSpeedTest(deviceId) {
+    const button = document.getElementById(`speedtest-${deviceId}`);
+    const result = document.getElementById(`speedresult-${deviceId}`);
+
+    button.disabled = true;
+    button.textContent = 'Testing…';
+    result.textContent = '';
+
+    try {
+        const response = await fetch(`/devices/${deviceId}/speedtest`, { method: 'POST' });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Test failed');
+
+        result.textContent = `${data.down_rate} · ${(data.duration_ms / 1000).toFixed(1)}s`;
+        result.className = 'small';
+    } catch (e) {
+        result.textContent = e.message;
+        result.className = 'small';
+        result.style.color = 'var(--danger)';
+    } finally {
+        button.disabled = false;
+        button.textContent = 'Run test';
+    }
+}
+
 async function claimDevice() {
     const button = document.getElementById('claimButton');
     const message = document.getElementById('claimMessage');
@@ -209,7 +294,7 @@ async function claimDevice() {
     }
 
     button.disabled = true;
-    message.classList.add('hidden');
+    message.hidden = true;
 
     try {
         const response = await fetch('/devices/claim', {
@@ -218,12 +303,9 @@ async function claimDevice() {
             body: new URLSearchParams({ code }),
         });
         const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Could not claim the node');
 
-        if (!response.ok) {
-            throw new Error(data.error || 'Could not claim the node');
-        }
-
-        showClaimMessage('Claimed as ' + data.device_id + '. The node will connect within a few seconds.', true);
+        showClaimMessage(`Claimed as ${data.device_id}. It will connect within a few seconds.`, true);
         setTimeout(() => location.reload(), 4000);
     } catch (e) {
         showClaimMessage(e.message, false);
@@ -235,23 +317,25 @@ async function claimDevice() {
 function showClaimMessage(text, ok) {
     const message = document.getElementById('claimMessage');
     message.textContent = text;
-    message.className = 'mt-3 text-sm ' + (ok ? 'text-green-700' : 'text-red-600');
+    message.className = ok ? 'notice notice-ok small' : 'notice notice-error small';
+    message.hidden = false;
 }
 
 function showAddDeviceModal() {
-    document.getElementById('deviceModal').classList.remove('hidden');
+    document.getElementById('deviceModal').hidden = false;
     document.getElementById('deviceName').focus();
 }
 
 function closeDeviceModal() {
-    document.getElementById('deviceModal').classList.add('hidden');
+    document.getElementById('deviceModal').hidden = true;
 }
 
 async function registerDevice() {
     const button = document.getElementById('deviceSubmit');
     const error = document.getElementById('deviceError');
+
     button.disabled = true;
-    error.classList.add('hidden');
+    error.hidden = true;
 
     try {
         const name = document.getElementById('deviceName').value;
@@ -260,19 +344,16 @@ async function registerDevice() {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: new URLSearchParams({ name }),
         });
-
         const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.error || 'Registration failed');
-        }
+        if (!response.ok) throw new Error(data.error || 'Registration failed');
 
         document.getElementById('resultId').textContent = data.device_id;
         document.getElementById('resultToken').textContent = data.device_token;
-        document.getElementById('deviceForm').classList.add('hidden');
-        document.getElementById('deviceResult').classList.remove('hidden');
+        document.getElementById('deviceForm').hidden = true;
+        document.getElementById('deviceResult').hidden = false;
     } catch (e) {
         error.textContent = e.message;
-        error.classList.remove('hidden');
+        error.hidden = false;
     } finally {
         button.disabled = false;
     }

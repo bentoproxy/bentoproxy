@@ -4,38 +4,474 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}BentoProxy{% endblock %}</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+    /*
+     * BentoProxy design system.
+     *
+     * One stylesheet, one set of tokens, a small number of components. Every
+     * view composes from these classes rather than carrying its own styling,
+     * so a change here changes every page and no page drifts.
+     *
+     * Mobile first: the base rules target a phone, and the few wider rules
+     * live in the single media query at the end.
+     */
+
+    /* ---- Tokens ---------------------------------------------------------- */
+
+    :root {
+        --bg: #fbfbfd;
+        --surface: #ffffff;
+        --surface-2: #f5f5f7;
+        --text: #1d1d1f;
+        --text-2: #6e6e73;
+        --border: rgba(0, 0, 0, 0.1);
+        --accent: #0071e3;
+        --accent-text: #ffffff;
+        --accent-hover: #0077ed;
+        --accent-soft: rgba(0, 113, 227, 0.1);
+        --ok: #1d7a44;
+        --ok-soft: rgba(29, 122, 68, 0.12);
+        --warn: #b25000;
+        --warn-soft: rgba(178, 80, 0, 0.12);
+        --danger: #c7372f;
+
+        --radius: 14px;
+        --radius-sm: 10px;
+        --radius-pill: 980px;
+        --shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.04);
+
+        --space-1: 4px;
+        --space-2: 8px;
+        --space-3: 12px;
+        --space-4: 16px;
+        --space-5: 24px;
+        --space-6: 32px;
+        --space-7: 48px;
+        --space-8: 72px;
+
+        --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+                system-ui, Roboto, Helvetica, Arial, sans-serif;
+        --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+        --maxw: 1040px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --bg: #000000;
+            --surface: #1c1c1e;
+            --surface-2: #2c2c2e;
+            --text: #f5f5f7;
+            --text-2: #a1a1a6;
+            --border: rgba(255, 255, 255, 0.14);
+            --accent: #0a84ff;
+            --accent-hover: #409cff;
+            --accent-soft: rgba(10, 132, 255, 0.18);
+            --ok: #4ad46a;
+            --ok-soft: rgba(74, 212, 106, 0.16);
+            --warn: #ff9f0a;
+            --warn-soft: rgba(255, 159, 10, 0.16);
+            --danger: #ff6961;
+            --shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+        }
+    }
+
+    /* ---- Base ------------------------------------------------------------ */
+
+    *, *::before, *::after { box-sizing: border-box; }
+
+    html { -webkit-text-size-adjust: 100%; }
+
+    body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 17px/1.5 var(--font);
+        -webkit-font-smoothing: antialiased;
+        display: flex;
+        flex-direction: column;
+        min-height: 100vh;
+    }
+
+    h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+    h1 { font-size: 30px; line-height: 1.15; letter-spacing: -0.02em; }
+    h2 { font-size: 23px; }
+    h3 { font-size: 19px; }
+    p { margin: 0; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .container {
+        width: 100%;
+        max-width: var(--maxw);
+        margin-inline: auto;
+        /* Side padding lives here only, so no page can lose its gutters. */
+        padding-inline: var(--space-4);
+    }
+
+    .muted { color: var(--text-2); }
+    .small { font-size: 14px; }
+    .mono { font-family: var(--mono); font-size: 14px; }
+    .center { text-align: center; }
+    .nowrap { white-space: nowrap; }
+
+    /* Vertical rhythm without per-element margins. */
+    .stack > * + * { margin-top: var(--space-4); }
+    .stack-sm > * + * { margin-top: var(--space-2); }
+    .stack-lg > * + * { margin-top: var(--space-6); }
+
+    .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-3);
+        align-items: center;
+    }
+    .row-end { justify-content: flex-end; }
+    .row-between { justify-content: space-between; }
+
+    .section { padding-block: var(--space-7); }
+
+    /* ---- Chrome ---------------------------------------------------------- */
+
+    .nav {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        background: color-mix(in srgb, var(--bg) 85%, transparent);
+        backdrop-filter: saturate(180%) blur(20px);
+        border-bottom: 1px solid var(--border);
+    }
+    .nav-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--space-3);
+        min-height: 52px;
+    }
+    .brand {
+        font-size: 19px;
+        font-weight: 600;
+        color: var(--text);
+        letter-spacing: -0.01em;
+    }
+    .brand:hover { text-decoration: none; opacity: 0.7; }
+    .nav-links { display: flex; align-items: center; gap: var(--space-2); }
+    .nav-link {
+        color: var(--text);
+        font-size: 15px;
+        padding: var(--space-2) var(--space-3);
+        border-radius: var(--radius-sm);
+    }
+    .nav-link:hover { background: var(--surface-2); text-decoration: none; }
+    /* Hide secondary text on narrow screens rather than wrapping the bar. */
+    .nav-email { display: none; }
+
+    main { flex: 1; }
+
+    .footer {
+        border-top: 1px solid var(--border);
+        margin-top: var(--space-8);
+        padding-block: var(--space-6);
+        color: var(--text-2);
+        font-size: 14px;
+    }
+
+    /* ---- Buttons --------------------------------------------------------- */
+
+    .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: var(--space-2);
+        /* 44px tall: a comfortable tap target on a phone. */
+        min-height: 44px;
+        padding: 10px var(--space-5);
+        border: 1px solid transparent;
+        border-radius: var(--radius-pill);
+        background: var(--surface-2);
+        color: var(--text);
+        font: inherit;
+        font-size: 16px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background 0.2s ease, opacity 0.2s ease;
+        text-align: center;
+    }
+    .btn:hover { text-decoration: none; background: var(--border); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); color: var(--accent-text); }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-secondary { background: var(--surface); border-color: var(--border); }
+    .btn-secondary:hover { background: var(--surface-2); }
+    .btn-sm { min-height: 32px; padding: 4px var(--space-4); font-size: 14px; }
+    .btn-block { width: 100%; }
+
+    /* ---- Surfaces -------------------------------------------------------- */
+
+    .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+    }
+    .card-body { padding: var(--space-5); }
+    .card-header {
+        padding: var(--space-5);
+        border-bottom: 1px solid var(--border);
+    }
+    .card-header + .card-body { padding-top: var(--space-5); }
+    .card-accent { background: var(--accent-soft); border-bottom: 1px solid var(--border); }
+
+    .stat-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: var(--space-4);
+    }
+    .stat { padding: var(--space-5); }
+    .stat-value { font-size: 30px; font-weight: 600; letter-spacing: -0.02em; }
+    .stat-label { color: var(--text-2); font-size: 14px; margin-top: var(--space-1); }
+
+    .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 10px;
+        border-radius: var(--radius-pill);
+        background: var(--surface-2);
+        color: var(--text-2);
+        font-size: 13px;
+        font-weight: 500;
+        white-space: nowrap;
+    }
+    .badge-ok { background: var(--ok-soft); color: var(--ok); }
+    .badge-warn { background: var(--warn-soft); color: var(--warn); }
+    .badge::before {
+        content: "";
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+    }
+    .badge-plain::before { display: none; }
+
+    .notice {
+        padding: var(--space-4);
+        border-radius: var(--radius-sm);
+        background: var(--surface-2);
+        color: var(--text-2);
+        font-size: 14px;
+    }
+    .notice-error { background: rgba(199, 55, 47, 0.12); color: var(--danger); }
+    .notice-ok { background: var(--ok-soft); color: var(--ok); }
+
+    .code {
+        display: block;
+        padding: var(--space-4);
+        border-radius: var(--radius-sm);
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        font-family: var(--mono);
+        font-size: 13px;
+        line-height: 1.6;
+        /* Long commands and keys scroll rather than widening the page. */
+        overflow-x: auto;
+        white-space: pre;
+    }
+    .code-inline {
+        font-family: var(--mono);
+        font-size: 13px;
+        background: var(--surface-2);
+        border-radius: 6px;
+        padding: 2px 6px;
+        word-break: break-all;
+    }
+
+    /* ---- Forms ----------------------------------------------------------- */
+
+    .field { display: block; }
+    .label {
+        display: block;
+        font-size: 14px;
+        font-weight: 500;
+        margin-bottom: var(--space-2);
+    }
+    .input, .select {
+        display: block;
+        width: 100%;
+        min-height: 44px;
+        padding: 10px var(--space-3);
+        background: var(--surface);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        /* 16px keeps iOS from zooming when a field is focused. */
+        font: inherit;
+        font-size: 16px;
+    }
+    .input:focus, .select:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    .hint { color: var(--text-2); font-size: 13px; margin-top: var(--space-2); }
+
+    fieldset { margin: 0; padding: 0; border: 0; }
+    legend { padding: 0; }
+
+    /* A radio or checkbox choice presented as a selectable card. Grid, not
+       flex, so a long label never wraps under its control. */
+    .option {
+        display: grid;
+        grid-template-columns: 20px 1fr;
+        gap: var(--space-3);
+        align-items: start;
+        padding: var(--space-4);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--surface);
+        cursor: pointer;
+    }
+    .option:hover { background: var(--surface-2); }
+    .option input { width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--accent); }
+    .option strong { display: block; font-weight: 500; }
+
+    /* ---- Tables ---------------------------------------------------------- */
+
+    /*
+     * One table markup, two layouts. On a phone each row becomes its own card
+     * with labels from data-label; the wide layout turns back into a table in
+     * the media query below. This is why every cell carries data-label.
+     */
+    .table { width: 100%; border-collapse: collapse; font-size: 15px; }
+    .table thead { display: none; }
+    .table tr {
+        display: block;
+        padding: var(--space-4);
+        border-bottom: 1px solid var(--border);
+    }
+    .table tr:last-child { border-bottom: 0; }
+    .table td {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: var(--space-4);
+        padding: var(--space-1) 0;
+        border: 0;
+    }
+    .table td::before {
+        content: attr(data-label);
+        color: var(--text-2);
+        font-size: 13px;
+        flex: none;
+    }
+    .table td > * { text-align: right; }
+
+    .table-empty { padding: var(--space-7) var(--space-5); text-align: center; }
+
+    /* ---- Marketing ------------------------------------------------------- */
+
+    .hero { padding-block: var(--space-7); text-align: center; }
+    .hero h1 { font-size: 40px; letter-spacing: -0.03em; }
+    .hero p { color: var(--text-2); font-size: 19px; margin-top: var(--space-4); }
+    .hero .row { justify-content: center; margin-top: var(--space-6); }
+
+    .feature-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: var(--space-4);
+    }
+    .feature h3 { margin-bottom: var(--space-2); }
+    .feature p { color: var(--text-2); font-size: 15px; }
+
+    .auth { max-width: 400px; margin-inline: auto; padding-block: var(--space-7); }
+
+    /* ---- Modal ----------------------------------------------------------- */
+
+    .modal {
+        position: fixed;
+        inset: 0;
+        z-index: 50;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: var(--space-4);
+        background: rgba(0, 0, 0, 0.4);
+    }
+    .modal[hidden] { display: none; }
+    .modal-panel {
+        position: relative;
+        width: 100%;
+        max-width: 440px;
+        max-height: 90vh;
+        overflow-y: auto;
+        background: var(--surface);
+        border-radius: var(--radius);
+        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.3);
+        padding: var(--space-5);
+    }
+
+    [hidden] { display: none !important; }
+
+    /* ---- Wider screens --------------------------------------------------- */
+
+    @media (min-width: 768px) {
+        h1 { font-size: 38px; }
+        .container { padding-inline: var(--space-5); }
+        .nav-inner { min-height: 60px; }
+        .nav-email { display: inline; color: var(--text-2); font-size: 14px; }
+        .hero { padding-block: var(--space-8); }
+        .hero h1 { font-size: 56px; }
+        .hero p { font-size: 21px; }
+
+        .table thead { display: table-header-group; }
+        .table tbody { display: table-row-group; }
+        .table tr { display: table-row; padding: 0; }
+        .table th {
+            padding: var(--space-3) var(--space-5);
+            text-align: left;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: var(--text-2);
+            border-bottom: 1px solid var(--border);
+            white-space: nowrap;
+        }
+        .table td {
+            display: table-cell;
+            padding: var(--space-4) var(--space-5);
+            border-bottom: 1px solid var(--border);
+            vertical-align: middle;
+        }
+        .table td::before { display: none; }
+        .table td > * { text-align: left; }
+        .table tr:last-child td { border-bottom: 0; }
+        /* Tables can exceed the viewport; scroll the table, never the page. */
+        .table-scroll { overflow-x: auto; }
+    }
+    </style>
 </head>
-<body class="bg-gray-50 min-h-screen">
-    <nav class="bg-white shadow-sm">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between h-16">
-                <div class="flex">
-                    <div class="flex-shrink-0 flex items-center">
-                        <a href="/" class="text-2xl font-bold text-indigo-600">BentoProxy</a>
-                    </div>
-                </div>
-                <div class="flex items-center space-x-4">
-                    {% block nav %}
-                    <a href="/login" class="text-gray-700 hover:text-indigo-600 px-3 py-2 rounded-md text-sm font-medium">Login</a>
-                    <a href="/register" class="bg-indigo-600 text-white hover:bg-indigo-700 px-4 py-2 rounded-md text-sm font-medium">Sign Up</a>
-                    {% endblock %}
-                </div>
-            </div>
+<body>
+    <header class="nav">
+        <div class="container nav-inner">
+            <a href="/" class="brand">BentoProxy</a>
+            <nav class="nav-links">
+                {% block nav %}
+                <a href="/login" class="nav-link">Log in</a>
+                <a href="/register" class="btn btn-primary btn-sm">Sign up</a>
+                {% endblock %}
+            </nav>
         </div>
-    </nav>
+    </header>
 
     <main>
         {% block content %}{% endblock %}
     </main>
 
-    <footer class="bg-white border-t border-gray-200 mt-auto">
-        <div class="max-w-7xl mx-auto py-12 px-4 sm:px-6 lg:px-8">
-            <p class="text-center text-gray-500 text-sm">
-                &copy; 2025 BentoProxy. Open source under AGPLv3.
-                <a href="https://github.com/bentoproxy" class="text-indigo-600 hover:text-indigo-500 ml-2">GitHub</a>
-            </p>
+    <footer class="footer">
+        <div class="container center">
+            BentoProxy — open source under AGPLv3 ·
+            <a href="https://github.com/bentoproxy">GitHub</a>
         </div>
     </footer>
 </body>

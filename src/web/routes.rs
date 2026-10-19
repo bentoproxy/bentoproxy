@@ -29,6 +29,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/dashboard", get(dashboard))
         .route("/devices", post(create_device))
         .route("/devices/claim", post(claim_device))
+        .route("/api/devices/stats", get(device_stats))
+        .route("/devices/:device_id/speedtest", post(speed_test))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

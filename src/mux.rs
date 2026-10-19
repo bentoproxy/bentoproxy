@@ -33,14 +33,25 @@ pub struct StreamMultiplexer {
     streams: Arc<DashMap<StreamId, Stream>>,
     /// Device registry reference (to send frames to devices)
     device_registry: crate::device_ws::DeviceRegistry,
+    /// Live per-device throughput, for the dashboard
+    meters: crate::metrics::DeviceMeters,
 }
 
 impl StreamMultiplexer {
     /// Create a new stream multiplexer
     pub fn new(device_registry: crate::device_ws::DeviceRegistry) -> Self {
+        Self::with_meters(device_registry, crate::metrics::DeviceMeters::new())
+    }
+
+    /// Create a multiplexer that reports throughput into shared meters.
+    pub fn with_meters(
+        device_registry: crate::device_ws::DeviceRegistry,
+        meters: crate::metrics::DeviceMeters,
+    ) -> Self {
         Self {
             streams: Arc::new(DashMap::new()),
             device_registry,
+            meters,
         }
     }
 
@@ -99,6 +110,10 @@ impl StreamMultiplexer {
                     }
                 } else {
                     if let Some(stream) = self.streams.get(&stream_id) {
+                        // Counted here rather than on flow completion: a long
+                        // download should show up while it is running.
+                        self.meters.record_down(device_id, frame.payload.len());
+
                         if let Err(e) = stream.socks5_sender.send(frame.payload.clone()) {
                             error!("Failed to send data to client: {}", e);
                             drop(stream); // Release DashMap read lock before close
@@ -154,6 +169,7 @@ impl StreamMultiplexer {
                 device
                     .send_frame(data_frame)
                     .map_err(|e| format!("Failed to send DATA to device: {}", e))?;
+                self.meters.record_up(&device_id, data.len());
                 debug!(
                     "Sent {} bytes from client to device (stream {})",
                     data.len(),

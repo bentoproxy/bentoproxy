@@ -3,6 +3,7 @@ use bentoproxy_orchestrator::{
     db::Database,
     device_ws::DeviceRegistry,
     http_proxy,
+    metrics::DeviceMeters,
     mux::StreamMultiplexer,
     socks5,
     web::{create_router, handlers::AppState},
@@ -39,7 +40,9 @@ async fn main() {
     info!("Device registry initialized");
 
     // Create stream multiplexer
-    let mux = StreamMultiplexer::new(registry.clone());
+    // Live throughput counters, shared by the proxy paths and the dashboard.
+    let meters = DeviceMeters::new();
+    let mux = StreamMultiplexer::with_meters(registry.clone(), meters.clone());
     info!("Stream multiplexer initialized");
 
     // Create JWT manager
@@ -50,6 +53,7 @@ async fn main() {
         db: db.clone(),
         registry: registry.clone(),
         mux: mux.clone(),
+        meters: meters.clone(),
         jwt_manager: jwt_manager.clone(),
         socks5_host: config.socks5_host.clone(),
         socks5_port: config.socks5_port,

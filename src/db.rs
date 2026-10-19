@@ -29,6 +29,7 @@ impl Database {
             M::up(include_str!("../migrations/001_initial.sql")),
             M::up(include_str!("../migrations/002_pending_claims.sql")),
             M::up(include_str!("../migrations/003_claim_attempts.sql")),
+            M::up(include_str!("../migrations/004_speed_tests.sql")),
         ]);
 
         migrations
@@ -548,6 +549,120 @@ impl Database {
             "DELETE FROM pending_claims WHERE claimed_at IS NULL AND announced_at < ?",
             params![cutoff],
         )?)
+    }
+}
+
+
+/// Recorded traffic for one device, from completed flows.
+#[derive(Debug, Clone, Default)]
+pub struct DeviceTraffic {
+    pub bytes_up_today: i64,
+    pub bytes_down_today: i64,
+    pub flows_today: i64,
+    /// Best sustained rate seen on a single flow, in bytes per second. Only
+    /// flows lasting at least a second count, since shorter ones divide by a
+    /// rounded duration.
+    pub peak_down_bps: i64,
+}
+
+impl Database {
+    /// Traffic totals for a device since midnight, plus its best observed rate.
+    pub fn device_traffic(&self, device_id: &str) -> Result<DeviceTraffic> {
+        let conn = self.conn.lock().unwrap();
+
+        let (bytes_up_today, bytes_down_today, flows_today) = conn.query_row(
+            "SELECT COALESCE(SUM(bytes_up), 0), COALESCE(SUM(bytes_down), 0), COUNT(*)
+             FROM flows
+             WHERE device_id = ? AND started_at >= strftime('%s', 'now', 'start of day')",
+            params![device_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+
+        let peak_down_bps = conn
+            .query_row(
+                "SELECT COALESCE(MAX(bytes_down / (ended_at - started_at)), 0)
+                 FROM flows
+                 WHERE device_id = ? AND ended_at IS NOT NULL
+                   AND ended_at - started_at >= 1",
+                params![device_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+
+        Ok(DeviceTraffic {
+            bytes_up_today,
+            bytes_down_today,
+            flows_today,
+            peak_down_bps,
+        })
+    }
+}
+
+
+/// The last speed test recorded for a device.
+#[derive(Debug, Clone)]
+pub struct SpeedTestResult {
+    pub ran_at: i64,
+    pub down_bps: i64,
+    pub ok: bool,
+    pub error: Option<String>,
+}
+
+impl Database {
+    pub fn record_speed_test(
+        &self,
+        device_id: &str,
+        result: &Result<crate::speedtest::Measurement, String>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().timestamp();
+
+        match result {
+            Ok(m) => conn.execute(
+                "INSERT INTO speed_tests (device_id, ran_at, bytes, duration_ms, down_bps, ok)
+                 VALUES (?, ?, ?, ?, ?, 1)",
+                params![device_id, now, m.bytes as i64, m.duration_ms as i64, m.down_bps as i64],
+            )?,
+            Err(e) => conn.execute(
+                "INSERT INTO speed_tests (device_id, ran_at, ok, error) VALUES (?, ?, 0, ?)",
+                params![device_id, now, e],
+            )?,
+        };
+
+        Ok(())
+    }
+
+    pub fn latest_speed_test(&self, device_id: &str) -> Result<Option<SpeedTestResult>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT ran_at, down_bps, ok, error FROM speed_tests
+                 WHERE device_id = ? ORDER BY ran_at DESC LIMIT 1",
+                params![device_id],
+                |row| {
+                    Ok(SpeedTestResult {
+                        ran_at: row.get(0)?,
+                        down_bps: row.get(1)?,
+                        ok: row.get::<_, i64>(2)? == 1,
+                        error: row.get(3)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Does this device belong to this owner?
+    pub fn device_belongs_to(&self, device_id: &str, owner_id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT 1 FROM devices WHERE id = ? AND owner_id = ?",
+                params![device_id, owner_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .is_some())
     }
 }
 
