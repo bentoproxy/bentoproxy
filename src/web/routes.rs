@@ -3,7 +3,7 @@ use axum::{
     extract::{Request, State},
     middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use axum_extra::extract::cookie::CookieJar;
@@ -24,6 +24,7 @@ pub fn create_router(state: AppState) -> Router {
     // Protected routes (auth required)
     let protected_routes = Router::new()
         .route("/dashboard", get(dashboard))
+        .route("/devices", post(create_device))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

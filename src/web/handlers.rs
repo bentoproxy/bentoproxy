@@ -10,7 +10,9 @@ use axum::{
     extract::{Extension, Form, State},
     http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
+    Json,
 };
+use serde_json::json;
 use axum_extra::extract::cookie::{Cookie, CookieJar};
 use chrono::DateTime;
 use std::sync::Arc;
@@ -272,6 +274,55 @@ where
                 )
                     .into_response()
             }
+        }
+    }
+}
+
+/// Register a new device for the signed-in owner.
+///
+/// Returns the device ID and token as JSON. The token is shown to the owner
+/// once, here, because it is not recoverable later: the firmware's setup page
+/// is the only place it needs to be entered. A future claim flow will hand the
+/// token straight to the device instead, so the owner never handles it.
+pub async fn create_device(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Form(form): Form<NewDeviceForm>,
+) -> Response {
+    // Proxy users consume the network; only owners contribute nodes to it.
+    if claims.role != UserRole::DeviceOwner {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "only device owners can register devices" })),
+        )
+            .into_response();
+    }
+
+    let name = form
+        .name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty());
+
+    match state.db.create_device(&claims.sub, name) {
+        Ok(device) => {
+            info!("registered device {} for owner {}", device.id, claims.sub);
+            (
+                StatusCode::CREATED,
+                Json(json!({
+                    "device_id": device.id,
+                    "device_token": device.token,
+                    "name": device.name,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!("failed to register device for {}: {}", claims.sub, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "could not register the device" })),
+            )
+                .into_response()
         }
     }
 }

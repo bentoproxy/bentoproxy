@@ -61,3 +61,9 @@ pub struct LoginPageData {
 pub struct RegisterPageData {
     pub error: Option<String>,
 }
+
+/// Optional friendly name supplied when registering a device.
+#[derive(Debug, Deserialize)]
+pub struct NewDeviceForm {
+    pub name: Option<String>,
+}
