@@ -54,6 +54,12 @@ async fn main() {
         registry: registry.clone(),
         mux: mux.clone(),
         meters: meters.clone(),
+        // An empty value counts as unset, so a stray "ADMIN_TOKEN=" cannot
+        // open the route with an empty password.
+        admin_token: std::env::var("ADMIN_TOKEN")
+            .ok()
+            .filter(|t| t.len() >= 32)
+            .map(|t| std::sync::Arc::from(t.as_str())),
         jwt_manager: jwt_manager.clone(),
         socks5_host: config.socks5_host.clone(),
         socks5_port: config.socks5_port,

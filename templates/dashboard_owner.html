@@ -152,7 +152,8 @@
                                     Run test
                                 </button>
                                 <div id="speedresult-{{ device.id }}" class="small muted"
-                                     style="margin-top: var(--space-1)"></div>
+                                     data-stat="last_test" data-device="{{ device.id }}"
+                                     style="margin-top: var(--space-1)">{{ device.last_test }}</div>
                             </div>
                         </td>
                     </tr>
@@ -220,7 +221,7 @@
 <script>
 // Live figures come from in-memory counters on the orchestrator, so a transfer
 // in progress is visible instead of appearing only once it finishes.
-const STAT_FIELDS = ['down_rate', 'up_rate', 'streams', 'down_today', 'up_today', 'peak_down'];
+const STAT_FIELDS = ['down_rate', 'up_rate', 'streams', 'down_today', 'up_today', 'peak_down', 'last_test'];
 
 async function refreshStats() {
     try {
@@ -264,7 +265,9 @@ async function runSpeedTest(deviceId) {
 
     button.disabled = true;
     button.textContent = 'Testing…';
-    result.textContent = '';
+    result.textContent = 'Running…';
+    // Stop the 5s poll from overwriting this row while the test runs.
+    result.removeAttribute('data-stat');
 
     try {
         const response = await fetch(`/devices/${deviceId}/speedtest`, { method: 'POST' });
@@ -288,6 +291,7 @@ async function runSpeedTest(deviceId) {
     } finally {
         button.disabled = false;
         button.textContent = 'Run test';
+        result.setAttribute('data-stat', 'last_test');
     }
 }
 

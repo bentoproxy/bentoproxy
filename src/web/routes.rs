@@ -41,6 +41,8 @@ pub fn create_router(state: AppState) -> Router {
         .merge(public_routes)
         .merge(protected_routes)
         .route("/ws/device", get(crate::device_ws::handle_upgrade))  // WebSocket for devices
+        // Operator tooling, token-gated and disabled unless ADMIN_TOKEN is set.
+        .route("/admin/devices/:device_id/speedtest", axum::routing::post(admin_speed_test))
         .nest_service("/static", ServeDir::new("static"))
         .layer(TraceLayer::new_for_http())
         .with_state(state)

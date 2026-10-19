@@ -60,6 +60,8 @@ pub struct DeviceInfo {
     pub up_today: String,
     /// Best sustained rate ever recorded for this device.
     pub peak_down: String,
+    /// The last owner-triggered speed test: its rate, or why it failed.
+    pub last_test: String,
 }
 
 #[derive(Debug, Serialize)]

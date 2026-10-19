@@ -7,7 +7,8 @@ use crate::{
 };
 use askama::Template;
 use axum::{
-    extract::{Extension, Form, Path, State},
+    extract::{Extension, Form, Path, Query, State},
+    http::HeaderMap,
     http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
     Json,
@@ -43,6 +44,8 @@ pub struct AppState {
     pub registry: DeviceRegistry,
     pub mux: StreamMultiplexer,
     pub meters: crate::metrics::DeviceMeters,
+    /// Shared secret for operator endpoints. None disables them entirely.
+    pub admin_token: Option<Arc<str>>,
     pub jwt_manager: Arc<JwtManager>,
     pub socks5_host: String,
     pub socks5_port: u16,
@@ -229,6 +232,7 @@ pub async fn dashboard(
                         let traffic = state.db.device_traffic(&d.id).unwrap_or_default();
                         let live = state.meters.snapshot(&d.id);
                         DeviceInfo {
+                        last_test: describe_last_test(&state, &d.id),
                         streams: state.mux.device_stream_count(&d.id),
                         down_bps: live.down_bps,
                         up_bps: live.up_bps,
@@ -568,6 +572,7 @@ pub async fn device_stats(
                 "peak_down": human_rate(traffic.peak_down_bps as u64),
                 "down_rate": human_rate(live.down_bps),
                 "up_rate": human_rate(live.up_bps),
+                "last_test": describe_last_test(&state, &d.id),
             })
         })
         .collect();
@@ -694,4 +699,99 @@ pub async fn speed_test(
             (StatusCode::OK, Json(json!({ "ok": false, "error": e }))).into_response()
         }
     }
+}
+
+/// The last speed test for a device, as a short line for the dashboard.
+///
+/// Results are kept so a measurement survives a page reload; without this the
+/// number disappeared the moment the owner refreshed.
+fn describe_last_test(state: &AppState, device_id: &str) -> String {
+    match state.db.latest_speed_test(device_id) {
+        Ok(Some(test)) => {
+            let when = DateTime::from_timestamp(test.ran_at, 0)
+                .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or_default();
+
+            if test.ok {
+                format!("{} on {when}", human_rate(test.down_bps as u64))
+            } else {
+                // Keep the reason: a node that fails every test is the
+                // interesting case, and it would otherwise look untested.
+                format!("failed on {when}")
+            }
+        }
+        Ok(None) => "never tested".to_string(),
+        Err(_) => String::new(),
+    }
+}
+
+/// Options for an operator-run speed test.
+#[derive(Debug, serde::Deserialize)]
+pub struct AdminSpeedTestQuery {
+    /// Bytes to download; clamped to the same cap as owner tests.
+    pub bytes: Option<u64>,
+}
+
+/// Run a speed test on any device, for operators tuning node firmware.
+///
+/// Authenticated by a shared token rather than by the connection's origin:
+/// behind the Cloudflare tunnel every public request reaches the orchestrator
+/// from 127.0.0.1, so "only from localhost" would admit the whole internet.
+/// Without ADMIN_TOKEN set the route answers 404, as if it did not exist.
+pub async fn admin_speed_test(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(device_id): Path<String>,
+    Query(query): Query<AdminSpeedTestQuery>,
+) -> Response {
+    let Some(expected) = state.admin_token.as_deref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    let presented = headers
+        .get("x-admin-token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !constant_time_eq(presented.as_bytes(), expected.as_bytes()) {
+        warn!("rejected admin speed test for {} with a bad token", device_id);
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    if state.registry.get_device(&device_id).is_none() {
+        return (StatusCode::OK, Json(json!({ "ok": false, "error": "node is offline" })))
+            .into_response();
+    }
+
+    let bytes = query.bytes.unwrap_or(crate::speedtest::DEFAULT_BYTES);
+    let outcome = crate::speedtest::run(&state.mux, &device_id, bytes)
+        .await
+        .map_err(|e| e.to_string());
+
+    if let Err(e) = state.db.record_speed_test(&device_id, &outcome) {
+        error!("could not store the speed test for {}: {}", device_id, e);
+    }
+
+    match outcome {
+        Ok(m) => (
+            StatusCode::OK,
+            Json(json!({
+                "ok": true,
+                "down_bps": m.down_bps,
+                "down_rate": human_rate(m.down_bps),
+                "bytes": m.bytes,
+                "duration_ms": m.duration_ms,
+            })),
+        )
+            .into_response(),
+        Err(e) => (StatusCode::OK, Json(json!({ "ok": false, "error": e }))).into_response(),
+    }
+}
+
+/// Compare secrets without leaking, through timing, how much of a guess matched.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
