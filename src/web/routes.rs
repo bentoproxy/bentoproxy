@@ -44,6 +44,11 @@ pub fn create_router(state: AppState) -> Router {
         // Operator tooling, token-gated and disabled unless ADMIN_TOKEN is set.
         .route("/admin/devices/:device_id/speedtest", axum::routing::post(admin_speed_test))
         .nest_service("/static", ServeDir::new("static"))
+        // Node firmware: the release manifest and signed images. Public on
+        // purpose — the firmware is open source, and nodes verify every image
+        // against the release key before installing it, so the integrity of
+        // an update never depends on who served it.
+        .nest_service("/api/device/firmware", ServeDir::new(firmware_dir()))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -76,4 +81,10 @@ async fn auth_middleware(
 
     // No valid token, redirect to login
     Err((jar, Redirect::to("/login")))
+}
+
+/// Where release manifests and images live. Kept outside the deploy
+/// directory so publishing firmware needs no root and no orchestrator restart.
+fn firmware_dir() -> String {
+    std::env::var("FIRMWARE_DIR").unwrap_or_else(|_| "/opt/apps/bentoproxy/firmware".to_string())
 }
