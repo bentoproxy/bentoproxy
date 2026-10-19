@@ -26,7 +26,7 @@ pub const DEFAULT_BYTES: u64 = 5 * 1024 * 1024;
 /// Hard cap, so a request cannot ask a volunteer's node for a huge download.
 pub const MAX_BYTES: u64 = 25 * 1024 * 1024;
 /// Whole-test budget, including waiting for the node to open the connection.
-const TEST_TIMEOUT: Duration = Duration::from_secs(60);
+const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 const ACK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What a completed test measured.
@@ -100,7 +100,22 @@ async fn measure(
             Ok(Some(chunk)) => chunk,
             // The target closed the connection: that is the end of the body.
             Ok(None) => break,
-            Err(_) => return Err(anyhow!("test timed out after {}s", TEST_TIMEOUT.as_secs())),
+            Err(_) if first_byte_at.is_none() => {
+                // Connected, asked, heard nothing: the node's network let the
+                // TCP handshake through but not the traffic, which is what a
+                // captive portal or a port-80 block looks like from here.
+                return Err(anyhow!(
+                    "connected to {TARGET_HOST} but no data came back in {}s — \
+                     this node's network may block or intercept port 80",
+                    TEST_TIMEOUT.as_secs()
+                ));
+            }
+            Err(_) => {
+                return Err(anyhow!(
+                    "transfer stalled after {} bytes",
+                    received.saturating_sub(header_bytes)
+                ))
+            }
         };
 
         if first_byte_at.is_none() {

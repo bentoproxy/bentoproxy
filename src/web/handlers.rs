@@ -665,10 +665,14 @@ pub async fn speed_test(
         error!("could not store the speed test for {}: {}", device_id, e);
     }
 
+    // Answer 200 either way and carry success in the body: Cloudflare replaces
+    // a 5xx from the origin with its own HTML error page, which reaches the
+    // browser as unparseable JSON and hides the real reason.
     match outcome {
         Ok(measurement) => (
             StatusCode::OK,
             Json(json!({
+                "ok": true,
                 "down_bps": measurement.down_bps,
                 "down_rate": human_rate(measurement.down_bps),
                 "bytes": measurement.bytes,
@@ -678,7 +682,7 @@ pub async fn speed_test(
             .into_response(),
         Err(e) => {
             warn!("speed test on {} failed: {}", device_id, e);
-            (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))).into_response()
+            (StatusCode::OK, Json(json!({ "ok": false, "error": e }))).into_response()
         }
     }
 }

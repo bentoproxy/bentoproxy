@@ -268,8 +268,16 @@ async function runSpeedTest(deviceId) {
 
     try {
         const response = await fetch(`/devices/${deviceId}/speedtest`, { method: 'POST' });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'Test failed');
+        // Read as text first: an error page from a proxy in front of us is not
+        // JSON, and a parse failure would hide the real reason.
+        const body = await response.text();
+        let data;
+        try {
+            data = JSON.parse(body);
+        } catch (parseError) {
+            throw new Error(`Unexpected response (${response.status})`);
+        }
+        if (!response.ok || data.ok === false) throw new Error(data.error || 'Test failed');
 
         result.textContent = `${data.down_rate} · ${(data.duration_ms / 1000).toFixed(1)}s`;
         result.className = 'small';
