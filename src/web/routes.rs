@@ -19,12 +19,16 @@ pub fn create_router(state: AppState) -> Router {
         .route("/", get(index))
         .route("/login", get(login_page).post(login_submit))
         .route("/register", get(register_page).post(register_submit))
-        .route("/logout", get(logout));
+        .route("/logout", get(logout))
+        // Device-facing: a node has no credentials until it is claimed.
+        .route("/api/device/announce", post(announce_device))
+        .route("/api/device/claim/:hw_id", get(poll_claim));
 
     // Protected routes (auth required)
     let protected_routes = Router::new()
         .route("/dashboard", get(dashboard))
         .route("/devices", post(create_device))
+        .route("/devices/claim", post(claim_device))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

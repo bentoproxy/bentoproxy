@@ -38,6 +38,40 @@
 
         <!-- Devices Table -->
         <div class="bg-white shadow overflow-hidden sm:rounded-lg">
+            <div id="claimPanel" class="px-4 py-5 sm:px-6 border-b border-gray-200 bg-indigo-50">
+                <h3 class="text-lg leading-6 font-medium text-gray-900">Add a node</h3>
+                <p class="mt-1 text-sm text-gray-600">
+                    Power on your node, connect it to your WiFi, then enter the setup code
+                    printed on it. No tokens to copy.
+                </p>
+
+                {% if pending.len() > 0 %}
+                <p class="mt-3 text-sm text-gray-700">
+                    <span class="font-medium">{{ pending.len() }}</span>
+                    node{% if pending.len() > 1 %}s{% endif %} waiting to be claimed:
+                    {% for node in pending %}
+                    <span class="inline-flex items-center px-2 py-0.5 ml-1 rounded text-xs font-mono bg-white border border-gray-300">{{ node.model }} · {{ node.hw_id }}</span>
+                    {% endfor %}
+                </p>
+                {% else %}
+                <p class="mt-3 text-sm text-gray-500">
+                    No node is waiting right now. A node appears here within a few seconds
+                    of joining your WiFi.
+                </p>
+                {% endif %}
+
+                <div class="mt-4 flex gap-3 items-start">
+                    <input id="claimCode" type="text" placeholder="Setup code (e.g. Z6YVD2ZM)"
+                           maxlength="32" autocapitalize="characters" autocomplete="off"
+                           class="block w-64 rounded-md border-gray-300 shadow-sm font-mono uppercase focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+                    <button id="claimButton" onclick="claimDevice()"
+                            class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 border border-transparent rounded-md shadow-sm hover:bg-indigo-700">
+                        Claim node
+                    </button>
+                </div>
+                <p id="claimMessage" class="hidden mt-3 text-sm"></p>
+            </div>
+
             <div class="px-4 py-5 sm:px-6 flex justify-between items-center">
                 <div>
                     <h3 class="text-lg leading-6 font-medium text-gray-900">My Devices</h3>
@@ -164,6 +198,46 @@
 </div>
 
 <script>
+async function claimDevice() {
+    const button = document.getElementById('claimButton');
+    const message = document.getElementById('claimMessage');
+    const code = document.getElementById('claimCode').value.trim().toUpperCase();
+
+    if (!code) {
+        showClaimMessage('Enter the setup code printed on your node.', false);
+        return;
+    }
+
+    button.disabled = true;
+    message.classList.add('hidden');
+
+    try {
+        const response = await fetch('/devices/claim', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({ code }),
+        });
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error || 'Could not claim the node');
+        }
+
+        showClaimMessage('Claimed as ' + data.device_id + '. The node will connect within a few seconds.', true);
+        setTimeout(() => location.reload(), 4000);
+    } catch (e) {
+        showClaimMessage(e.message, false);
+    } finally {
+        button.disabled = false;
+    }
+}
+
+function showClaimMessage(text, ok) {
+    const message = document.getElementById('claimMessage');
+    message.textContent = text;
+    message.className = 'mt-3 text-sm ' + (ok ? 'text-green-700' : 'text-red-600');
+}
+
 function showAddDeviceModal() {
     document.getElementById('deviceModal').classList.remove('hidden');
     document.getElementById('deviceName').focus();

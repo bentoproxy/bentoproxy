@@ -25,7 +25,11 @@ impl Database {
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
 
         // Run migrations
-        let migrations = Migrations::new(vec![M::up(include_str!("../migrations/001_initial.sql"))]);
+        let migrations = Migrations::new(vec![
+            M::up(include_str!("../migrations/001_initial.sql")),
+            M::up(include_str!("../migrations/002_pending_claims.sql")),
+            M::up(include_str!("../migrations/003_claim_attempts.sql")),
+        ]);
 
         migrations
             .to_latest(&mut conn)
@@ -396,6 +400,155 @@ fn verify_password(password: &str, password_hash: &str) -> Result<bool> {
         PasswordHash::new(password_hash).map_err(|e| anyhow::anyhow!("Invalid password hash: {}", e))?;
     let argon2 = Argon2::default();
     Ok(argon2.verify_password(password.as_bytes(), &parsed_hash).is_ok())
+}
+
+
+/// A node waiting for an owner to claim it.
+#[derive(Debug, Clone)]
+pub struct PendingClaim {
+    pub hw_id: String,
+    pub model: Option<String>,
+    pub announced_at: i64,
+}
+
+impl Database {
+    /// Record (or refresh) a node announcing itself as unclaimed.
+    ///
+    /// Called by the device itself, with no authentication — it has no
+    /// credentials yet. A row already claimed is left alone so a late
+    /// announce cannot discard credentials the node has not collected.
+    pub fn announce_pending(&self, hw_id: &str, claim_code: &str, model: Option<&str>) -> Result<()> {
+        let now = Utc::now().timestamp();
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "INSERT INTO pending_claims (hw_id, claim_code, model, created_at, announced_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(hw_id) DO UPDATE SET
+                announced_at = excluded.announced_at,
+                claim_code = CASE WHEN pending_claims.claimed_at IS NULL
+                                  THEN excluded.claim_code ELSE pending_claims.claim_code END,
+                model = excluded.model",
+            params![hw_id, claim_code, model, now, now],
+        )?;
+
+        Ok(())
+    }
+
+    /// Nodes seen within `max_age_secs` that no owner has claimed.
+    pub fn list_pending_claims(&self, max_age_secs: i64) -> Result<Vec<PendingClaim>> {
+        let cutoff = Utc::now().timestamp() - max_age_secs;
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT hw_id, model, announced_at FROM pending_claims
+             WHERE claimed_at IS NULL AND announced_at >= ?
+             ORDER BY announced_at DESC",
+        )?;
+
+        let rows = stmt
+            .query_map(params![cutoff], |row| {
+                Ok(PendingClaim {
+                    hw_id: row.get(0)?,
+                    model: row.get(1)?,
+                    announced_at: row.get(2)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(rows)
+    }
+
+    /// Failed claim attempts by this owner within the window.
+    ///
+    /// Counted per owner: a per-device counter would let one person lock every
+    /// unclaimed node in the system by submitting wrong codes.
+    pub fn recent_claim_attempts(&self, owner_id: &str, window_secs: i64) -> Result<i64> {
+        let cutoff = Utc::now().timestamp() - window_secs;
+        let conn = self.conn.lock().unwrap();
+
+        // Opportunistic cleanup of attempts that no longer count.
+        conn.execute("DELETE FROM claim_attempts WHERE attempted_at < ?", params![cutoff])?;
+
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM claim_attempts WHERE owner_id = ? AND attempted_at >= ?",
+            params![owner_id, cutoff],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Bind an unclaimed node to an owner by its printed code.
+    ///
+    /// Returns the created device, or None when no unclaimed node matches, in
+    /// which case the attempt is recorded against this owner.
+    pub fn claim_by_code(&self, owner_id: &str, code: &str) -> Result<Option<Device>> {
+        let code = code.trim().to_uppercase();
+
+        let hw_id: Option<String> = {
+            let conn = self.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT hw_id FROM pending_claims
+                 WHERE claim_code = ? AND claimed_at IS NULL",
+                params![code],
+                |row| row.get(0),
+            )
+            .optional()?
+        };
+
+        let Some(hw_id) = hw_id else {
+            let conn = self.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO claim_attempts (owner_id, attempted_at) VALUES (?, ?)",
+                params![owner_id, Utc::now().timestamp()],
+            )?;
+            return Ok(None);
+        };
+
+        // create_device takes the lock itself, so it must run outside ours.
+        let device = self.create_device(owner_id, None)?;
+
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE pending_claims SET device_id = ?, token = ?, claimed_at = ? WHERE hw_id = ?",
+            params![device.id, device.token, Utc::now().timestamp(), hw_id],
+        )?;
+
+        Ok(Some(device))
+    }
+
+    /// Hand over credentials to the node that announced `hw_id`, once.
+    ///
+    /// The row is deleted on pickup: the credentials live in the device's NVS
+    /// from then on, and leaving a copy here would be a second place to leak
+    /// them from.
+    pub fn take_claimed_credentials(&self, hw_id: &str) -> Result<Option<(String, String)>> {
+        let conn = self.conn.lock().unwrap();
+
+        let found: Option<(String, String)> = conn
+            .query_row(
+                "SELECT device_id, token FROM pending_claims
+                 WHERE hw_id = ? AND claimed_at IS NOT NULL",
+                params![hw_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+
+        if found.is_some() {
+            conn.execute("DELETE FROM pending_claims WHERE hw_id = ?", params![hw_id])?;
+        }
+
+        Ok(found)
+    }
+
+    /// Drop announcements nobody claimed, so the table cannot grow unbounded
+    /// from unauthenticated announces.
+    pub fn prune_pending_claims(&self, max_age_secs: i64) -> Result<usize> {
+        let cutoff = Utc::now().timestamp() - max_age_secs;
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.execute(
+            "DELETE FROM pending_claims WHERE claimed_at IS NULL AND announced_at < ?",
+            params![cutoff],
+        )?)
+    }
 }
 
 fn generate_api_key() -> String {

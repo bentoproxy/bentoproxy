@@ -7,7 +7,7 @@ use crate::{
 };
 use askama::Template;
 use axum::{
-    extract::{Extension, Form, State},
+    extract::{Extension, Form, Path, State},
     http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
     Json,
@@ -16,7 +16,18 @@ use serde_json::json;
 use axum_extra::extract::cookie::{Cookie, CookieJar};
 use chrono::DateTime;
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
+
+/// How long an unclaimed announcement is kept. Long enough for someone to
+/// unbox a device and get to their dashboard, short enough that abandoned
+/// announcements disappear.
+const PENDING_CLAIM_TTL_SECS: i64 = 24 * 60 * 60;
+/// Wrong codes one owner may submit per window. The code is 40 bits, so this
+/// makes guessing hopeless while leaving room for typos. Counted per owner,
+/// never per device: otherwise one person's guessing would lock everyone
+/// else's unclaimed nodes.
+const MAX_CLAIM_ATTEMPTS: i64 = 10;
+const CLAIM_ATTEMPT_WINDOW_SECS: i64 = 15 * 60;
 
 /// Shared application state
 #[derive(Clone)]
@@ -56,6 +67,8 @@ struct DashboardOwnerTemplate {
     devices: Vec<DeviceInfo>,
     online_count: usize,
     total_count: usize,
+    /// Nodes on the network that no owner has claimed yet.
+    pending: Vec<PendingNode>,
 }
 
 #[derive(Template)]
@@ -230,9 +243,27 @@ pub async fn dashboard(
             let total_count = devices.len();
             let online_count = devices.iter().filter(|d| d.is_online).count();
 
+            let pending = match state.db.list_pending_claims(PENDING_CLAIM_TTL_SECS) {
+                Ok(nodes) => nodes
+                    .into_iter()
+                    .map(|n| PendingNode {
+                        hw_id: n.hw_id,
+                        model: n.model.unwrap_or_else(|| "unknown".to_string()),
+                        waiting_since: DateTime::from_timestamp(n.announced_at, 0)
+                            .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+                            .unwrap_or_default(),
+                    })
+                    .collect(),
+                Err(e) => {
+                    error!("failed to list pending claims: {}", e);
+                    vec![]
+                }
+            };
+
             let template = DashboardOwnerTemplate {
                 email: claims.email,
                 devices,
+                pending,
                 online_count,
                 total_count,
             };
@@ -326,3 +357,151 @@ pub async fn create_device(
         }
     }
 }
+
+/// A node tells the orchestrator it exists and is waiting for an owner.
+///
+/// Unauthenticated by necessity: the device has no credentials yet. It carries
+/// only its hardware id and the code printed on its case, neither of which
+/// grants access to anything. Announcements expire, so this cannot be used to
+/// fill the table.
+pub async fn announce_device(
+    State(state): State<AppState>,
+    Form(form): Form<DeviceAnnounceForm>,
+) -> Response {
+    let hw_id = form.hw_id.trim();
+    let code = form.claim_code.trim().to_uppercase();
+
+    // Cheap shape checks so junk never reaches the database.
+    if hw_id.is_empty() || hw_id.len() > 64 || code.len() < 8 || code.len() > 32 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid hw_id or claim_code" })),
+        )
+            .into_response();
+    }
+
+    // Opportunistic cleanup; announcing is the only thing that grows this table.
+    if let Err(e) = state.db.prune_pending_claims(PENDING_CLAIM_TTL_SECS) {
+        error!("failed to prune pending claims: {}", e);
+    }
+
+    match state.db.announce_pending(hw_id, &code, form.model.as_deref()) {
+        Ok(()) => {
+            info!("node {} announced itself, awaiting a claim", hw_id);
+            (StatusCode::OK, Json(json!({ "status": "pending" }))).into_response()
+        }
+        Err(e) => {
+            error!("failed to record announcement from {}: {}", hw_id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "could not record the announcement" })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// A node polls for the credentials an owner's claim produced.
+///
+/// Returns them exactly once; afterwards the node has them in NVS and the row
+/// is gone. Knowing a hardware id alone yields nothing until an owner has
+/// entered that device's printed code.
+pub async fn poll_claim(State(state): State<AppState>, Path(hw_id): Path<String>) -> Response {
+    match state.db.take_claimed_credentials(&hw_id) {
+        Ok(Some((device_id, token))) => {
+            info!("node {} collected its credentials as {}", hw_id, device_id);
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "status": "claimed",
+                    "device_id": device_id,
+                    "device_token": token,
+                })),
+            )
+                .into_response()
+        }
+        Ok(None) => (StatusCode::OK, Json(json!({ "status": "pending" }))).into_response(),
+        Err(e) => {
+            error!("failed to read claim for {}: {}", hw_id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "could not read the claim" })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// An owner claims a waiting node by the code printed on it.
+pub async fn claim_device(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Form(form): Form<ClaimDeviceForm>,
+) -> Response {
+    if claims.role != UserRole::DeviceOwner {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "only device owners can claim devices" })),
+        )
+            .into_response();
+    }
+
+    match state
+        .db
+        .recent_claim_attempts(&claims.sub, CLAIM_ATTEMPT_WINDOW_SECS)
+    {
+        Ok(attempts) if attempts >= MAX_CLAIM_ATTEMPTS => {
+            warn!("owner {} hit the claim attempt limit", claims.sub);
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "error": format!(
+                        "too many incorrect codes — wait {} minutes and try again",
+                        CLAIM_ATTEMPT_WINDOW_SECS / 60
+                    )
+                })),
+            )
+                .into_response();
+        }
+        Ok(_) => {}
+        Err(e) => {
+            error!("failed to read claim attempts for {}: {}", claims.sub, e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "could not check the claim rate limit" })),
+            )
+                .into_response();
+        }
+    }
+
+    match state.db.claim_by_code(&claims.sub, &form.code) {
+        Ok(Some(device)) => {
+            info!("owner {} claimed device {}", claims.sub, device.id);
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "status": "claimed",
+                    "device_id": device.id,
+                })),
+            )
+                .into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "no node is waiting with that code — check the code on the device, \
+                          and that the node is powered on and connected to your WiFi"
+            })),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("claim failed for owner {}: {}", claims.sub, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "could not claim the device" })),
+            )
+                .into_response()
+        }
+    }
+}
+

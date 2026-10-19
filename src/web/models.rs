@@ -67,3 +67,25 @@ pub struct RegisterPageData {
 pub struct NewDeviceForm {
     pub name: Option<String>,
 }
+
+/// A node announcing itself before any owner has claimed it.
+#[derive(Debug, Deserialize)]
+pub struct DeviceAnnounceForm {
+    pub hw_id: String,
+    pub claim_code: String,
+    pub model: Option<String>,
+}
+
+/// The code an owner reads off a device to claim it.
+#[derive(Debug, Deserialize)]
+pub struct ClaimDeviceForm {
+    pub code: String,
+}
+
+/// A node waiting to be claimed, as shown on the dashboard.
+#[derive(Debug, Serialize)]
+pub struct PendingNode {
+    pub hw_id: String,
+    pub model: String,
+    pub waiting_since: String,
+}
