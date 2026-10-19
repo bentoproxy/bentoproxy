@@ -31,6 +31,10 @@ const CLAIM_ATTEMPT_WINDOW_SECS: i64 = 15 * 60;
 /// Minimum gap between speed tests on one device. Tests put real traffic on a
 /// volunteer's home connection, so they stay occasional and owner-initiated.
 const SPEEDTEST_COOLDOWN_SECS: i64 = 5 * 60;
+/// Gap after a test that failed. A failure moved no traffic, so the reason for
+/// the long cooldown does not apply — but a short gap still stops a broken
+/// node being hammered by someone retrying.
+const SPEEDTEST_FAILED_COOLDOWN_SECS: i64 = 30;
 
 /// Shared application state
 #[derive(Clone)]
@@ -644,13 +648,18 @@ pub async fn speed_test(
 
     // Respect the cooldown, measured from the last recorded attempt.
     if let Ok(Some(previous)) = state.db.latest_speed_test(&device_id) {
+        let cooldown = if previous.ok {
+            SPEEDTEST_COOLDOWN_SECS
+        } else {
+            SPEEDTEST_FAILED_COOLDOWN_SECS
+        };
         let age = chrono::Utc::now().timestamp() - previous.ran_at;
-        if age < SPEEDTEST_COOLDOWN_SECS {
-            let wait = SPEEDTEST_COOLDOWN_SECS - age;
+
+        if age < cooldown {
             return (
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(json!({
-                    "error": format!("tested {}s ago — try again in {}s", age, wait)
+                    "error": format!("tested {}s ago — try again in {}s", age, cooldown - age)
                 })),
             )
                 .into_response();

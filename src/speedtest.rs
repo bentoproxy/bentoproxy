@@ -26,7 +26,14 @@ pub const DEFAULT_BYTES: u64 = 5 * 1024 * 1024;
 /// Hard cap, so a request cannot ask a volunteer's node for a huge download.
 pub const MAX_BYTES: u64 = 25 * 1024 * 1024;
 /// Whole-test budget, including waiting for the node to open the connection.
+///
+/// Reaching it is not a failure: a slow node simply transfers less, and what
+/// arrived is still a measurement. Only too little to be meaningful is an
+/// error.
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Smallest transfer worth reporting a rate from. Below this, TCP slow-start
+/// dominates and the figure would flatter or libel the node.
+const MIN_SAMPLE: u64 = 256 * 1024;
 const ACK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What a completed test measured.
@@ -111,10 +118,13 @@ async fn measure(
                 ));
             }
             Err(_) => {
-                return Err(anyhow!(
-                    "transfer stalled after {} bytes",
-                    received.saturating_sub(header_bytes)
-                ))
+                // Out of time with data flowing: report the rate for what did
+                // arrive rather than throwing the measurement away.
+                let body = received.saturating_sub(header_bytes);
+                if body < MIN_SAMPLE {
+                    return Err(anyhow!("transfer stalled after {body} bytes"));
+                }
+                break;
             }
         };
 
@@ -153,6 +163,12 @@ async fn measure(
     let elapsed = first_byte_at
         .ok_or_else(|| anyhow!("no data came back through {device_id}"))?
         .elapsed();
+
+    if body < bytes {
+        debug!(
+            "speed test on {device_id}: measured {body} of {bytes} bytes before the time limit"
+        );
+    }
 
     // A transfer too short to time would divide by ~0 and report nonsense.
     let duration_ms = elapsed.as_millis().max(1) as u64;

@@ -437,7 +437,13 @@ impl Database {
     }
 
     /// Nodes seen within `max_age_secs` that no owner has claimed.
+    ///
+    /// Expired rows are dropped here as well as on announce: a network whose
+    /// nodes are all claimed never announces again, so announce-time pruning
+    /// alone would leave stale rows on the dashboard forever.
     pub fn list_pending_claims(&self, max_age_secs: i64) -> Result<Vec<PendingClaim>> {
+        self.prune_pending_claims(max_age_secs)?;
+
         let cutoff = Utc::now().timestamp() - max_age_secs;
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
