@@ -66,6 +66,9 @@ impl DeviceRegistry {
     }
 }
 
+/// Upper bound on a capacity a device may declare for itself.
+const MAX_DECLARED_STREAMS: usize = 512;
+
 /// Device session handle
 #[derive(Clone)]
 pub struct DeviceSession {
@@ -331,7 +334,22 @@ async fn authenticate_device(
                 return Ok(None);
             }
 
-            let max_conns = device.max_conns.max(1) as usize;
+            // A node that declares its capacity knows it better than the
+            // database default, which was set by hand per device. Clamped,
+            // since the value comes from the device: overclaiming would only
+            // overload that owner's node, but it should not be able to ask
+            // for an unbounded share of traffic.
+            let max_conns = match frame.parse_auth_capabilities() {
+                Some(caps) => {
+                    let declared = (caps.max_streams as usize).clamp(1, MAX_DECLARED_STREAMS);
+                    info!(
+                        "Device {} declares {:?} with capacity {} (database had {})",
+                        device_id, caps.kind, declared, device.max_conns
+                    );
+                    declared
+                }
+                None => device.max_conns.max(1) as usize,
+            };
 
             // Start session in database
             match db.start_device_session(&device_id) {
