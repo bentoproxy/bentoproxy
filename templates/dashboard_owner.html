@@ -94,6 +94,7 @@
                         <th>Today</th>
                         <th>Best</th>
                         <th>Speed test</th>
+                        <th><span class="visually-hidden">Remove</span></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -156,6 +157,17 @@
                                      style="margin-top: var(--space-1)">{{ device.last_test }}</div>
                             </div>
                         </td>
+                        <td data-label="">
+                            <!-- Through data attributes, not inline arguments:
+                                 a name is owner-supplied text and would escape
+                                 a JS string literal. -->
+                            <button class="btn btn-danger btn-sm"
+                                    data-device="{{ device.id }}"
+                                    data-name="{{ device.name }}"
+                                    onclick="askRemoveDevice(this)">
+                                Remove
+                            </button>
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -174,6 +186,24 @@
         nothing unexpected appears on your home connection.
     </p>
 </section>
+
+<!-- Removing a node: irreversible, so it is confirmed by name. -->
+<div class="modal" id="removeModal" hidden>
+    <div class="modal-panel stack">
+        <h2>Remove this node?</h2>
+        <p class="muted small">
+            <strong id="removeName"></strong> (<span class="mono" id="removeId"></span>)
+            will be removed from your account along with its traffic history.
+            If the node is still running it stops relaying at once; to use it
+            again, factory-reset it and claim it anew.
+        </p>
+        <div id="removeError" class="notice notice-error small" hidden></div>
+        <div class="row row-end">
+            <button class="btn btn-secondary" onclick="closeRemoveModal()">Cancel</button>
+            <button class="btn btn-danger" id="removeConfirm" onclick="removeDevice()">Remove</button>
+        </div>
+    </div>
+</div>
 
 <!-- Manual registration, for nodes that cannot run the claim flow. -->
 <div class="modal" id="deviceModal" hidden>
@@ -258,6 +288,46 @@ function formatBytes(bytes) {
 
 refreshStats();
 setInterval(refreshStats, 5000);
+
+let deviceToRemove = null;
+
+function askRemoveDevice(button) {
+    const deviceId = button.dataset.device;
+    deviceToRemove = deviceId;
+    document.getElementById('removeId').textContent = deviceId;
+    document.getElementById('removeName').textContent = button.dataset.name || deviceId;
+    document.getElementById('removeError').hidden = true;
+    document.getElementById('removeModal').hidden = false;
+}
+
+function closeRemoveModal() {
+    deviceToRemove = null;
+    document.getElementById('removeModal').hidden = true;
+}
+
+async function removeDevice() {
+    if (!deviceToRemove) return;
+    const button = document.getElementById('removeConfirm');
+    const error = document.getElementById('removeError');
+    button.disabled = true;
+    button.textContent = 'Removing...';
+
+    try {
+        const response = await fetch(`/devices/${deviceToRemove}`, { method: 'DELETE' });
+        const data = await response.json();
+        if (!response.ok || data.ok === false) {
+            throw new Error(data.error || 'could not remove the device');
+        }
+        location.reload();
+        return;
+    } catch (e) {
+        error.textContent = e.message;
+        error.hidden = false;
+    }
+
+    button.disabled = false;
+    button.textContent = 'Remove';
+}
 
 async function runSpeedTest(deviceId) {
     const button = document.getElementById(`speedtest-${deviceId}`);

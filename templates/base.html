@@ -202,6 +202,19 @@
     .btn-primary:hover { background: var(--accent-hover); }
     .btn-secondary { background: var(--surface); border-color: var(--border); }
     .btn-secondary:hover { background: var(--surface-2); }
+    /* Readable by a screen reader, invisible on screen: for a column whose
+       header would otherwise be an empty cell. */
+    .visually-hidden {
+        position: absolute;
+        width: 1px; height: 1px;
+        margin: -1px; padding: 0; border: 0;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+    }
+
+    .btn-danger { background: var(--surface); border-color: var(--border); color: var(--danger); }
+    .btn-danger:hover { background: rgba(199, 55, 47, 0.1); border-color: var(--danger); }
     .btn-sm { min-height: 32px; padding: 4px var(--space-4); font-size: 14px; }
     .btn-block { width: 100%; }
 

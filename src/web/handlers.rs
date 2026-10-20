@@ -611,6 +611,55 @@ fn human_rate(bytes_per_sec: u64) -> String {
 /// Never called on a schedule: the traffic lands on the owner's home
 /// connection, so a test happens only when they ask for one, and not more
 /// often than the cooldown allows.
+/// Remove a node from the account for good.
+///
+/// A factory-reset node claims a fresh identity, so its old row lingers as a
+/// node that will never come back; nothing could remove it until now. The
+/// node is forgotten first and its streams closed, so an online node stops
+/// carrying traffic the moment the owner removes it.
+pub async fn remove_device(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(device_id): Path<String>,
+) -> Response {
+    if claims.role != UserRole::DeviceOwner {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "only device owners can remove a device" })),
+        )
+            .into_response();
+    }
+
+    // Owner-scoped, so this both authorises and acts.
+    match state.db.delete_device(&device_id, &claims.sub) {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "no such device" })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!("could not remove device {}: {}", device_id, e);
+            return (
+                StatusCode::OK,
+                Json(json!({ "ok": false, "error": "could not remove the device" })),
+            )
+                .into_response();
+        }
+    }
+
+    state.registry.forget(&device_id);
+    let closed = state.mux.close_all_device_streams(&device_id);
+
+    info!(
+        "owner {} removed device {} ({} streams closed)",
+        claims.sub, device_id, closed
+    );
+    (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+}
+
 pub async fn speed_test(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,

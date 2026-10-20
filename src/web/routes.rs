@@ -31,6 +31,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/devices/claim", post(claim_device))
         .route("/api/devices/stats", get(device_stats))
         .route("/devices/:device_id/speedtest", post(speed_test))
+        .route("/devices/:device_id", axum::routing::delete(remove_device))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

@@ -658,6 +658,21 @@ impl Database {
             .optional()?)
     }
 
+    /// Remove a device and everything recorded about it.
+    ///
+    /// Scoped to the owner so a guessed id cannot delete someone else's node.
+    /// Sessions, flows, usage rollups and speed tests go with it through
+    /// `ON DELETE CASCADE`, which needs the foreign-key pragma set in `open`.
+    /// False means there was no such device for this owner.
+    pub fn delete_device(&self, device_id: &str, owner_id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let removed = conn.execute(
+            "DELETE FROM devices WHERE id = ? AND owner_id = ?",
+            params![device_id, owner_id],
+        )?;
+        Ok(removed > 0)
+    }
+
     /// Does this device belong to this owner?
     pub fn device_belongs_to(&self, device_id: &str, owner_id: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap();

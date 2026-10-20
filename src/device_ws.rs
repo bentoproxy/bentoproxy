@@ -61,6 +61,14 @@ impl DeviceRegistry {
         });
     }
 
+    /// Drop a device's session so nothing is routed to it any more.
+    ///
+    /// Its socket stays open until the next write fails, which is enough: a
+    /// deleted device can no longer authenticate, so it never comes back.
+    pub fn forget(&self, device_id: &str) -> bool {
+        self.devices.remove(device_id).is_some()
+    }
+
     pub fn count(&self) -> usize {
         self.devices.len()
     }
