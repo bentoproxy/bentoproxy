@@ -1,7 +1,4 @@
-use crate::{
-    db::Database,
-    device_ws::DeviceRegistry,
-};
+use crate::db::Database;
 use std::net::SocketAddr;
 use thiserror::Error;
 use tokio::{
@@ -13,7 +10,6 @@ use tracing::{debug, error, info, warn};
 /// Run HTTP CONNECT proxy server
 pub async fn run_server(
     listen_addr: SocketAddr,
-    registry: DeviceRegistry,
     db: Database,
     mux: crate::mux::StreamMultiplexer,
 ) -> Result<(), HttpProxyError> {
@@ -27,11 +23,10 @@ pub async fn run_server(
         match listener.accept().await {
             Ok((stream, peer_addr)) => {
                 debug!("New HTTP proxy connection from {}", peer_addr);
-                let registry = registry.clone();
                 let db = db.clone();
                 let mux = mux.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_client(stream, registry, db, mux).await {
+                    if let Err(e) = handle_client(stream, db, mux).await {
                         error!("HTTP proxy client error from {}: {}", peer_addr, e);
                     }
                 });
@@ -46,7 +41,6 @@ pub async fn run_server(
 /// Handle a single HTTP proxy client connection
 async fn handle_client(
     stream: TcpStream,
-    registry: DeviceRegistry,
     db: Database,
     mux: crate::mux::StreamMultiplexer,
 ) -> Result<(), HttpProxyError> {
@@ -132,27 +126,19 @@ async fn handle_client(
         return Err(HttpProxyError::PortBlocked(port));
     }
 
-    // Get best available device (least-connections with capacity check)
-    let device_session = registry
-        .get_best_device(&mux)
-        .ok_or(HttpProxyError::NoDevicesAvailable)?;
-
-    debug!("Selected device {} for proxy", device_session.device_id);
-
-    // Create channel for receiving data from device
+    // Channel for data coming back from the device
     let (http_tx, mut http_rx) = tokio::sync::mpsc::unbounded_channel();
 
-    // Create stream via multiplexer (sends OPEN frame to device)
-    let (stream_id, ack_rx) = mux
-        .create_stream(&device_session.device_id, &host, port, http_tx)
+    // Least-connections device, failing over if it does not acknowledge
+    let (device_session, stream_id) = mux
+        .open_stream(&host, port, http_tx)
         .await
-        .map_err(|e| HttpProxyError::DeviceError(e))?;
+        .map_err(|e| match e {
+            crate::mux::OpenError::NoDevices => HttpProxyError::NoDevicesAvailable,
+            other => HttpProxyError::DeviceError(other.to_string()),
+        })?;
 
-    // Wait for ACK from device (with timeout)
-    tokio::time::timeout(tokio::time::Duration::from_secs(5), ack_rx)
-        .await
-        .map_err(|_| HttpProxyError::DeviceError("Device ACK timeout".to_string()))?
-        .map_err(|_| HttpProxyError::DeviceError("Device ACK channel closed".to_string()))?;
+    debug!("Selected device {} for proxy", device_session.device_id);
 
     debug!("Received ACK from device for stream {}", stream_id);
 

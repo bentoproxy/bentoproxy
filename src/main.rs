@@ -73,13 +73,12 @@ async fn main() {
     let socks5_addr: SocketAddr = format!("0.0.0.0:{}", config.socks5_port)
         .parse()
         .unwrap();
-    let socks5_registry = registry.clone();
     let socks5_db = db.clone();
     let socks5_mux = mux.clone();
     let require_socks5_auth = config.require_socks5_auth;
     tokio::spawn(async move {
         info!("SOCKS5 server listening on {}", socks5_addr);
-        if let Err(e) = socks5::run_server(socks5_addr, socks5_registry, socks5_db, socks5_mux, require_socks5_auth).await
+        if let Err(e) = socks5::run_server(socks5_addr, socks5_db, socks5_mux, require_socks5_auth).await
         {
             error!("SOCKS5 server error: {}", e);
         }
@@ -104,12 +103,11 @@ async fn main() {
     let http_proxy_addr: SocketAddr = format!("0.0.0.0:{}", config.http_proxy_port)
         .parse()
         .unwrap();
-    let http_proxy_registry = registry.clone();
     let http_proxy_db = db.clone();
     let http_proxy_mux = mux.clone();
     tokio::spawn(async move {
         info!("HTTP CONNECT proxy listening on {}", http_proxy_addr);
-        if let Err(e) = http_proxy::run_server(http_proxy_addr, http_proxy_registry, http_proxy_db, http_proxy_mux).await
+        if let Err(e) = http_proxy::run_server(http_proxy_addr, http_proxy_db, http_proxy_mux).await
         {
             error!("HTTP CONNECT proxy error: {}", e);
         }

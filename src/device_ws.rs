@@ -18,13 +18,21 @@ use tracing::{debug, error, info, warn};
 #[derive(Clone)]
 pub struct DeviceRegistry {
     devices: Arc<DashMap<String, DeviceSession>>,
+    /// Devices that recently failed to open a stream: when they may be
+    /// tried again, and how many failures in a row led there.
+    benched: Arc<DashMap<String, (Instant, u32)>>,
     db: Database,
 }
+
+/// First bench after a failed open; doubles per further failure in a row.
+const BENCH_BASE: Duration = Duration::from_secs(15);
+const BENCH_MAX: Duration = Duration::from_secs(300);
 
 impl DeviceRegistry {
     pub fn new(db: Database) -> Self {
         Self {
             devices: Arc::new(DashMap::new()),
+            benched: Arc::new(DashMap::new()),
             db,
         }
     }
@@ -36,16 +44,64 @@ impl DeviceRegistry {
 
     /// Get device with fewest active streams that still has capacity (least-connections routing)
     pub fn get_best_device(&self, mux: &crate::mux::StreamMultiplexer) -> Option<DeviceSession> {
+        self.get_best_device_excluding(mux, &[])
+    }
+
+    /// Least-connections choice among devices not in `exclude`.
+    ///
+    /// Benched devices are passed over while any other device has room, but
+    /// still used when nothing else does: a flaky node beats no node.
+    pub fn get_best_device_excluding(
+        &self,
+        mux: &crate::mux::StreamMultiplexer,
+        exclude: &[String],
+    ) -> Option<DeviceSession> {
+        let now = Instant::now();
         self.devices
             .iter()
             .map(|entry| {
                 let device = entry.value().clone();
                 let count = mux.device_stream_count(&device.device_id);
-                (device, count)
+                let benched = self
+                    .benched
+                    .get(&device.device_id)
+                    .is_some_and(|b| b.0 > now);
+                (device, count, benched)
             })
-            .filter(|(device, count)| *count < device.max_conns)
-            .min_by_key(|(_, count)| *count)
-            .map(|(device, _)| device)
+            .filter(|(device, count, _)| {
+                *count < device.max_conns && !exclude.contains(&device.device_id)
+            })
+            .min_by_key(|(_, count, benched)| (*benched, *count))
+            .map(|(device, _, _)| device)
+    }
+
+    /// A device did not acknowledge a new stream in time: route around it.
+    ///
+    /// Nodes on home and coworking networks drop out for minutes at a time
+    /// while staying connected, and least-connections routing kept handing
+    /// them new streams, so the scraper's health check failed and it paused
+    /// for half an hour although another node was fine.
+    pub fn report_open_failure(&self, device_id: &str) {
+        let mut entry = self
+            .benched
+            .entry(device_id.to_string())
+            .or_insert((Instant::now(), 0));
+        let failures = entry.1 + 1;
+        let bench = (BENCH_BASE * 2u32.saturating_pow(failures - 1)).min(BENCH_MAX);
+        *entry = (Instant::now() + bench, failures);
+        warn!(
+            "Device {} failed to open a stream ({} in a row); benched for {}s",
+            device_id,
+            failures,
+            bench.as_secs()
+        );
+    }
+
+    /// A device opened a stream: whatever was wrong has passed.
+    pub fn report_open_success(&self, device_id: &str) {
+        if let Some((_, (_, failures))) = self.benched.remove(device_id) {
+            info!("Device {} is opening streams again after {} failures", device_id, failures);
+        }
     }
 
     /// Register a connected device

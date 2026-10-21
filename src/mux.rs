@@ -14,6 +14,35 @@ use tracing::{debug, error, info, warn};
 /// Unique identifier for a stream
 pub type StreamId = u32;
 
+/// How long a device has to acknowledge a new stream.
+pub const ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Devices tried per connection before giving up on it.
+const OPEN_ATTEMPTS: usize = 2;
+
+/// Why a stream could not be opened.
+#[derive(Debug)]
+pub enum OpenError {
+    /// No connected device has room for another stream.
+    NoDevices,
+    /// The device refused, e.g. the target was unreachable from it.
+    Rejected(String),
+    /// Every device tried failed to acknowledge in time.
+    Timeout,
+    Other(String),
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpenError::NoDevices => write!(f, "No devices available"),
+            OpenError::Rejected(e) => write!(f, "Device ACK channel closed: {e}"),
+            OpenError::Timeout => write!(f, "Device ACK timeout"),
+            OpenError::Other(e) => write!(f, "{e}"),
+        }
+    }
+}
+
 /// A single proxied stream (SOCKS5 client <-> Device <-> TCP target)
 pub struct Stream {
     pub stream_id: StreamId,
@@ -52,6 +81,54 @@ impl StreamMultiplexer {
             streams: Arc::new(DashMap::new()),
             device_registry,
             meters,
+        }
+    }
+
+    /// Open a stream to `host:port` on the best device, moving to another
+    /// device if the first does not acknowledge in time.
+    ///
+    /// Only a missing ACK moves on: a device that answers with an error is
+    /// working, and its error (usually the target refusing) is the answer.
+    pub async fn open_stream(
+        &self,
+        host: &str,
+        port: u16,
+        sender: mpsc::UnboundedSender<Bytes>,
+    ) -> Result<(crate::device_ws::DeviceSession, StreamId), OpenError> {
+        let registry = &self.device_registry;
+        let mut tried: Vec<String> = Vec::new();
+
+        for _ in 0..OPEN_ATTEMPTS {
+            let Some(device) = registry.get_best_device_excluding(self, &tried) else {
+                break;
+            };
+            let (stream_id, ack_rx) = self
+                .create_stream(&device.device_id, host, port, sender.clone())
+                .await
+                .map_err(OpenError::Other)?;
+
+            match tokio::time::timeout(ACK_TIMEOUT, ack_rx).await {
+                Ok(Ok(())) => {
+                    registry.report_open_success(&device.device_id);
+                    return Ok((device, stream_id));
+                }
+                Ok(Err(_)) => {
+                    // Answered, but with an error: not the device's fault.
+                    self.remove_stream(stream_id);
+                    return Err(OpenError::Rejected(format!("{host}:{port}")));
+                }
+                Err(_) => {
+                    registry.report_open_failure(&device.device_id);
+                    self.close_stream(stream_id, &device.device_id);
+                    tried.push(device.device_id);
+                }
+            }
+        }
+
+        if tried.is_empty() {
+            Err(OpenError::NoDevices)
+        } else {
+            Err(OpenError::Timeout)
         }
     }
 
