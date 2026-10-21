@@ -100,8 +100,8 @@ async fn handle_client(
 
     // Parse Proxy-Authorization header — send 407 on failure so clients
     // (like Chrome CDP Fetch.authRequired) can retry with credentials.
-    let proxy_user_id = match parse_proxy_authorization(&headers, &db).await {
-        Ok(id) => id,
+    let (proxy_user_id, node) = match parse_proxy_authorization(&headers, &db).await {
+        Ok(auth) => auth,
         Err(
             e @ HttpProxyError::AuthenticationRequired
             | e @ HttpProxyError::AuthenticationFailed
@@ -131,7 +131,7 @@ async fn handle_client(
 
     // Least-connections device, failing over if it does not acknowledge
     let (device_session, stream_id) = mux
-        .open_stream(&host, port, http_tx)
+        .open_stream(&host, port, http_tx, node.as_deref())
         .await
         .map_err(|e| match e {
             crate::mux::OpenError::NoDevices => HttpProxyError::NoDevicesAvailable,
@@ -251,11 +251,14 @@ fn parse_host_port(target: &str) -> Result<(String, u16), HttpProxyError> {
     Ok((host, port))
 }
 
-/// Parse Proxy-Authorization header (Basic auth with API key)
+/// Parse Proxy-Authorization header (Basic auth with API key).
+///
+/// Returns the proxy user and, if the username names one
+/// (`api-node-<device_id>`), the node the connection must leave from.
 async fn parse_proxy_authorization(
     headers: &[String],
     db: &Database,
-) -> Result<Option<String>, HttpProxyError> {
+) -> Result<(Option<String>, Option<String>), HttpProxyError> {
     // Find Proxy-Authorization header
     let auth_header = headers
         .iter()
@@ -296,12 +299,13 @@ async fn parse_proxy_authorization(
     }
 
     let api_key = parts[1]; // Password field contains API key
+    let node = crate::mux::requested_node(parts[0]).map(str::to_string);
 
     // Validate API key
     match db.get_proxy_user_by_api_key(api_key) {
         Ok(Some(user)) => {
             debug!("HTTP proxy user authenticated: {}", user.email);
-            Ok(Some(user.id))
+            Ok((Some(user.id), node))
         }
         Ok(None) => {
             warn!("HTTP proxy authentication failed: invalid API key");

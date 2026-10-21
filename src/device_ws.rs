@@ -69,7 +69,11 @@ impl DeviceRegistry {
                 (device, count, benched)
             })
             .filter(|(device, count, _)| {
-                *count < device.max_conns && !exclude.contains(&device.device_id)
+                // Reserved nodes are never part of the pool, not even when
+                // everything else is busy: their exit is kept for one use.
+                !device.reserved
+                    && *count < device.max_conns
+                    && !exclude.contains(&device.device_id)
             })
             .min_by_key(|(_, count, benched)| (*benched, *count))
             .map(|(device, _, _)| device)
@@ -140,6 +144,8 @@ pub struct DeviceSession {
     pub sender: mpsc::UnboundedSender<Frame>,
     pub max_conns: usize,
     pub session_nonce: u64,
+    /// Only for traffic that names this node; never chosen for the pool.
+    pub reserved: bool,
 }
 
 impl DeviceSession {
@@ -165,11 +171,16 @@ async fn handle_device_connection(socket: WebSocket, registry: DeviceRegistry, m
     // Wait for AUTH frame (with timeout)
     let auth_timeout = tokio::time::timeout(Duration::from_secs(30), ws_receiver.next()).await;
 
-    let (device_id, db_session_id, max_conns) = match auth_timeout {
+    let (device_id, db_session_id, max_conns, reserved) = match auth_timeout {
         Ok(Some(Ok(Message::Binary(data)))) => {
             match authenticate_device(&registry.db, Bytes::from(data)).await {
-                Ok(Some((device_id, session_id, max_conns))) => {
-                    info!("Device authenticated: {} (max_conns={})", device_id, max_conns);
+                Ok(Some((device_id, session_id, max_conns, reserved))) => {
+                    info!(
+                        "Device authenticated: {} (max_conns={}{})",
+                        device_id,
+                        max_conns,
+                        if reserved { ", reserved" } else { "" }
+                    );
 
                     // Send AUTH acknowledgment (empty DATA frame with ACK flag)
                     let ack_frame = Frame::data_ack(0);
@@ -178,7 +189,7 @@ async fn handle_device_connection(socket: WebSocket, registry: DeviceRegistry, m
                         return;
                     }
 
-                    (device_id, session_id, max_conns)
+                    (device_id, session_id, max_conns, reserved)
                 }
                 Ok(None) => {
                     warn!("Device authentication failed: invalid credentials");
@@ -225,6 +236,7 @@ async fn handle_device_connection(socket: WebSocket, registry: DeviceRegistry, m
         sender: tx,
         max_conns,
         session_nonce,
+        reserved,
     };
 
     // Register device in registry (replaces any previous session)
@@ -381,7 +393,7 @@ async fn handle_device_connection(socket: WebSocket, registry: DeviceRegistry, m
 async fn authenticate_device(
     db: &Database,
     data: Bytes,
-) -> Result<Option<(String, i64, usize)>, ProtocolError> {
+) -> Result<Option<(String, i64, usize, bool)>, ProtocolError> {
     let frame = Frame::from_bytes(data)?;
 
     if frame.frame_type != FrameType::Auth {
@@ -417,7 +429,7 @@ async fn authenticate_device(
 
             // Start session in database
             match db.start_device_session(&device_id) {
-                Ok(session_id) => Ok(Some((device_id, session_id, max_conns))),
+                Ok(session_id) => Ok(Some((device_id, session_id, max_conns, device.reserved))),
                 Err(e) => {
                     error!("Failed to start device session: {}", e);
                     Ok(None)

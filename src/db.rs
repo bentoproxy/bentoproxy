@@ -30,6 +30,7 @@ impl Database {
             M::up(include_str!("../migrations/002_pending_claims.sql")),
             M::up(include_str!("../migrations/003_claim_attempts.sql")),
             M::up(include_str!("../migrations/004_speed_tests.sql")),
+            M::up(include_str!("../migrations/005_reserved_devices.sql")),
         ]);
 
         migrations
@@ -161,15 +162,16 @@ impl Database {
             is_active: true,
             created_at,
             last_seen_at: None,
+            reserved: false,
         })
     }
 
     /// Authenticate device by token
     pub fn authenticate_device(&self, device_id: &str, token: &str) -> Result<Option<Device>> {
         let conn = self.conn.lock().unwrap();
-        let result: Option<(String, String, String, Option<String>, i32, i32, i64, Option<i64>)> = conn
+        let result: Option<(String, String, String, Option<String>, i32, i32, i64, Option<i64>, i32)> = conn
             .query_row(
-                "SELECT id, owner_id, token, name, max_conns, is_active, created_at, last_seen_at FROM devices WHERE id = ? AND token = ?",
+                "SELECT id, owner_id, token, name, max_conns, is_active, created_at, last_seen_at, reserved FROM devices WHERE id = ? AND token = ?",
                 params![device_id, token],
                 |row| {
                     Ok((
@@ -181,13 +183,14 @@ impl Database {
                         row.get(5)?,
                         row.get(6)?,
                         row.get(7)?,
+                        row.get(8)?,
                     ))
                 },
             )
             .optional()?;
 
         Ok(result.map(
-            |(id, owner_id, token, name, max_conns, is_active, created_at, last_seen_at)| Device {
+            |(id, owner_id, token, name, max_conns, is_active, created_at, last_seen_at, reserved)| Device {
                 id,
                 owner_id,
                 token,
@@ -196,6 +199,7 @@ impl Database {
                 is_active: is_active != 0,
                 created_at,
                 last_seen_at,
+                reserved: reserved != 0,
             },
         ))
     }
@@ -215,7 +219,7 @@ impl Database {
     pub fn get_devices_for_owner(&self, owner_id: &str) -> Result<Vec<Device>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, owner_id, token, name, max_conns, is_active, created_at, last_seen_at FROM devices WHERE owner_id = ? ORDER BY created_at DESC",
+            "SELECT id, owner_id, token, name, max_conns, is_active, created_at, last_seen_at, reserved FROM devices WHERE owner_id = ? ORDER BY created_at DESC",
         )?;
 
         let devices = stmt
@@ -229,6 +233,7 @@ impl Database {
                     is_active: row.get::<_, i32>(5)? != 0,
                     created_at: row.get(6)?,
                     last_seen_at: row.get(7)?,
+                    reserved: row.get::<_, i32>(8)? != 0,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -373,6 +378,8 @@ pub struct Device {
     pub is_active: bool,
     pub created_at: i64,
     pub last_seen_at: Option<i64>,
+    /// Takes only traffic that names it (see migration 005).
+    pub reserved: bool,
 }
 
 #[derive(Debug, Clone)]

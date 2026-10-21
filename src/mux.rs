@@ -20,11 +20,24 @@ pub const ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Devices tried per connection before giving up on it.
 const OPEN_ATTEMPTS: usize = 2;
 
+/// Proxy username that pins a connection to one node: `api-node-<device_id>`.
+/// Any other username (conventionally `api`) leaves the choice to the pool.
+const NODE_USERNAME_PREFIX: &str = "api-node-";
+
+/// The node a client asked for in its proxy username, if any.
+pub fn requested_node(username: &str) -> Option<&str> {
+    username
+        .strip_prefix(NODE_USERNAME_PREFIX)
+        .filter(|id| !id.is_empty())
+}
+
 /// Why a stream could not be opened.
 #[derive(Debug)]
 pub enum OpenError {
     /// No connected device has room for another stream.
     NoDevices,
+    /// The node the client asked for is not connected, or is full.
+    NodeUnavailable(String),
     /// The device refused, e.g. the target was unreachable from it.
     Rejected(String),
     /// Every device tried failed to acknowledge in time.
@@ -36,6 +49,7 @@ impl std::fmt::Display for OpenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             OpenError::NoDevices => write!(f, "No devices available"),
+            OpenError::NodeUnavailable(id) => write!(f, "Requested node {id} is not available"),
             OpenError::Rejected(e) => write!(f, "Device ACK channel closed: {e}"),
             OpenError::Timeout => write!(f, "Device ACK timeout"),
             OpenError::Other(e) => write!(f, "{e}"),
@@ -89,39 +103,35 @@ impl StreamMultiplexer {
     ///
     /// Only a missing ACK moves on: a device that answers with an error is
     /// working, and its error (usually the target refusing) is the answer.
+    ///
+    /// With `node` set the stream goes there or nowhere: a client that names
+    /// a node needs that exit, and leaving from another would defeat it.
     pub async fn open_stream(
         &self,
         host: &str,
         port: u16,
         sender: mpsc::UnboundedSender<Bytes>,
+        node: Option<&str>,
     ) -> Result<(crate::device_ws::DeviceSession, StreamId), OpenError> {
         let registry = &self.device_registry;
+
+        if let Some(node) = node {
+            let device = registry
+                .get_device(node)
+                .filter(|d| self.device_stream_count(&d.device_id) < d.max_conns)
+                .ok_or_else(|| OpenError::NodeUnavailable(node.to_string()))?;
+            return self.open_on(&device, host, port, sender).await;
+        }
+
         let mut tried: Vec<String> = Vec::new();
 
         for _ in 0..OPEN_ATTEMPTS {
             let Some(device) = registry.get_best_device_excluding(self, &tried) else {
                 break;
             };
-            let (stream_id, ack_rx) = self
-                .create_stream(&device.device_id, host, port, sender.clone())
-                .await
-                .map_err(OpenError::Other)?;
-
-            match tokio::time::timeout(ACK_TIMEOUT, ack_rx).await {
-                Ok(Ok(())) => {
-                    registry.report_open_success(&device.device_id);
-                    return Ok((device, stream_id));
-                }
-                Ok(Err(_)) => {
-                    // Answered, but with an error: not the device's fault.
-                    self.remove_stream(stream_id);
-                    return Err(OpenError::Rejected(format!("{host}:{port}")));
-                }
-                Err(_) => {
-                    registry.report_open_failure(&device.device_id);
-                    self.close_stream(stream_id, &device.device_id);
-                    tried.push(device.device_id);
-                }
+            match self.open_on(&device, host, port, sender.clone()).await {
+                Err(OpenError::Timeout) => tried.push(device.device_id),
+                other => return other,
             }
         }
 
@@ -129,6 +139,38 @@ impl StreamMultiplexer {
             Err(OpenError::NoDevices)
         } else {
             Err(OpenError::Timeout)
+        }
+    }
+
+    /// Open a stream on one device and wait for it to acknowledge.
+    async fn open_on(
+        &self,
+        device: &crate::device_ws::DeviceSession,
+        host: &str,
+        port: u16,
+        sender: mpsc::UnboundedSender<Bytes>,
+    ) -> Result<(crate::device_ws::DeviceSession, StreamId), OpenError> {
+        let registry = &self.device_registry;
+        let (stream_id, ack_rx) = self
+            .create_stream(&device.device_id, host, port, sender)
+            .await
+            .map_err(OpenError::Other)?;
+
+        match tokio::time::timeout(ACK_TIMEOUT, ack_rx).await {
+            Ok(Ok(())) => {
+                registry.report_open_success(&device.device_id);
+                Ok((device.clone(), stream_id))
+            }
+            Ok(Err(_)) => {
+                // Answered, but with an error: not the device's fault.
+                self.remove_stream(stream_id);
+                Err(OpenError::Rejected(format!("{host}:{port}")))
+            }
+            Err(_) => {
+                registry.report_open_failure(&device.device_id);
+                self.close_stream(stream_id, &device.device_id);
+                Err(OpenError::Timeout)
+            }
         }
     }
 

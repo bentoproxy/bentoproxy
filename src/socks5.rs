@@ -66,10 +66,11 @@ async fn handle_client(
     let auth_method = handshake_methods(&mut stream, require_auth).await?;
 
     // Step 2: Authentication (if required)
-    let proxy_user_id = if auth_method == AUTH_METHOD_USERNAME_PASSWORD {
-        Some(authenticate_user(&mut stream, &db).await?)
+    let (proxy_user_id, node) = if auth_method == AUTH_METHOD_USERNAME_PASSWORD {
+        let (user_id, node) = authenticate_user(&mut stream, &db).await?;
+        (Some(user_id), node)
     } else {
-        None
+        (None, None)
     };
 
     // Step 3: Request (CONNECT)
@@ -96,7 +97,7 @@ async fn handle_client(
 
     // Least-connections device, failing over if it does not acknowledge
     let (device_session, stream_id) = mux
-        .open_stream(&host, port, socks5_tx)
+        .open_stream(&host, port, socks5_tx, node.as_deref())
         .await
         .map_err(|e| match e {
             crate::mux::OpenError::NoDevices => Socks5Error::NoDevicesAvailable,
@@ -242,7 +243,12 @@ async fn handshake_methods(stream: &mut TcpStream, require_auth: bool) -> Result
 }
 
 /// SOCKS5 username/password authentication
-async fn authenticate_user(stream: &mut TcpStream, db: &Database) -> Result<String, Socks5Error> {
+/// Returns the proxy user and the node its username names, if any
+/// (`api-node-<device_id>`).
+async fn authenticate_user(
+    stream: &mut TcpStream,
+    db: &Database,
+) -> Result<(String, Option<String>), Socks5Error> {
     // Read: VER(1) | ULEN(1) | USERNAME(ULEN) | PLEN(1) | PASSWORD(PLEN)
     let mut buf = [0u8; 2];
     stream
@@ -276,7 +282,8 @@ async fn authenticate_user(stream: &mut TcpStream, db: &Database) -> Result<Stri
         .await
         .map_err(|e| Socks5Error::IoError(e.to_string()))?;
 
-    let _username_str = String::from_utf8_lossy(&username);
+    let username_str = String::from_utf8_lossy(&username);
+    let node = crate::mux::requested_node(&username_str).map(str::to_string);
     let password_str = String::from_utf8_lossy(&password);
 
     // For SOCKS5, we use API key as password (username can be anything or "api")
@@ -290,7 +297,7 @@ async fn authenticate_user(stream: &mut TcpStream, db: &Database) -> Result<Stri
                 .write_all(&[0x01, 0x00])
                 .await
                 .map_err(|e| Socks5Error::IoError(e.to_string()))?;
-            Ok(user.id)
+            Ok((user.id, node))
         }
         Ok(None) => {
             warn!("SOCKS5 authentication failed: invalid API key");
