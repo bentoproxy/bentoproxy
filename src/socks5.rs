@@ -178,8 +178,13 @@ async fn handle_client(
         } => result,
     };
 
-    // Always clean up stream when relay exits — prevents zombie streams (Bug #1)
-    mux.remove_stream(stream_id);
+    // Always clean up stream when relay exits — prevents zombie streams (Bug #1).
+    // close_stream, not remove_stream: when the client hung up first, the node
+    // still holds the target connection and must be told, or it keeps it open
+    // until the target times out (with keep-alive, possibly never) and a small
+    // node fills up with dead streams. When the node closed first the stream
+    // is already gone and nothing is sent.
+    mux.close_stream(stream_id, &device_session.device_id);
 
     // End flow with byte counts
     if let Err(e) = db.end_flow(flow_id, Some((bytes_up, bytes_down))) {
